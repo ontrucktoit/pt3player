@@ -72,6 +72,15 @@ covering all versions, FeaturesLevels, and effects:
 | Pator_Parallel_Visions.pt3 | VTII 1.0 | 1 | GLISS + DELAY + ENGLS |
 | FreeSky.pt3 | PT3.7 | 2 | GLISS + VIBRATO + NOISE |
 
+## References
+
+See [docs/REFERENCES.md](docs/REFERENCES.md) for the complete list of external
+resources (VTII, ZXTune, Bulba VTII10, AY-3-8910 datasheet, TED manual, PT3 spec).
+
+Key reference for 6502 port decisions: the Python simulator in `pt3_python_sim/`
+(bit-exact validated against VTII on 20 diverse PT3 files). Every non-obvious
+behavior is documented there with line references to VTII's `trfuncs.pas`.
+
 ## Credits
 
 - **Project owner**: Kris (Plus/4 hardware, test methodology, DigiMuz card)
