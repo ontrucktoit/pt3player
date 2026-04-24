@@ -62,3 +62,72 @@ First CA65 program compiled successfully:
    no crash, RTS returns to BASIC cleanly when stopped).
 6. Start py65 test harness: `tests/harness.py` — loads `.prg` into emulator,
    simulates N IRQs, reads shadow AY state, diffs against Python simulator output.
+
+---
+
+## Session 4 — 2026-04-24 (continued): architecture freeze + M1
+
+### Architecture decisions finalized
+
+Resolved all three open questions from `docs/ARCHITECTURE.md`:
+
+- **Q1 (IRQ ownership)**: **Host owns timer, player is pure library**.
+  Researched standard practice across SID/AY music drivers (Lemon64, chipmusic,
+  Digitalerr0r, SIDBlaster, BBC SIDPlayer) — unanimous convention since 1985.
+  Kris's `config.asm` layout (PLAYER_PLAY = $3003) was correct from the start.
+
+- **Q2 (stop semantics)**: `player_stop` = mute + halt, preserving position.
+  `player_rewind` = full reset. Enables pause/resume and next-track semantics.
+
+- **Q3 (loop flags)**: Two independent flags `loop_track_flag` and
+  `loop_playlist_flag`. Setting loop_track=1 forces loop_playlist=0. When
+  loop_track=0 and loop_playlist=0, VTII default behavior applies (use
+  loop_pos from header).
+
+All decisions captured in `docs/ARCHITECTURE.md` commit 308fa88.
+
+### M1 — Hello Tone — PASS
+
+First working milestone. Scope: minimal viable player.
+
+Files created:
+- `src/pt3_player.inc` (81 lines): shared equates
+- `src/player.cfg`: ld65 config
+- `src/player.s` (267 lines): jump table + 8 stub entries
+- `tests/harness.py` (276 lines): py65 harness
+
+What's implemented:
+- Jump table at $3000-$3017 (8 entries × 3 bytes, all verified)
+- `player_init`: zero shadow AY, hardcode A-4 on ch A
+- `player_play`: tight 14-register write loop to DigiMuz
+- `player_stop`, `player_set_flags`: working
+- Other procedures: stubs returning fixed values
+
+Harness capabilities:
+- Automatic ca65+ld65 build
+- py65 ObservableMemory with write observers on $FD22, $FD23
+- AYBusObserver reconstructs 14-register state from reg-sel/data-write pairs
+- `call_subroutine()` uses sentinel-address trap to detect RTS exit
+
+Test results:
+- Build: 4096-byte binary, 152 bytes code+data used (~3.7% of budget)
+- player_init: 69 py65-instruction steps
+- player_play: 75 steps/frame avg across 60 frames
+- All 60 frames produce IDENTICAL output (determinism ✓)
+- Final AY state matches M1 expected spec bit-exact ✓
+
+Commit: `4c7d45e`.
+
+### Next: M2 — note table runtime generator
+
+Port Ivan Roshin's `NoteTableCreator` algorithm from `pt3_tables.py`
+(validated by 20/20 bit-exact against VTII) to 6502.
+
+Goal: harness can call `player_init(tone_table=N)` and read back a 192-byte
+note table that byte-exactly matches Python's `build_note_table(N)` output,
+for all 4 tone table types × 2 version flags = 8 combinations.
+
+This is where real complexity starts. Ivan Roshin's Z80 asm is ~60 lines;
+we need 6502 port with 16-bit arithmetic (no 16-bit regs on 6502!).
+Estimated size: 150-250 bytes of code + 192 bytes table RAM + a few
+constants ~20 bytes. Should fit comfortably.
