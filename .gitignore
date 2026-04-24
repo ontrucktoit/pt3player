@@ -1,4 +1,10 @@
+# Build outputs (reproducible from sources via ca65 + ld65)
 build/*.o
+build/*.sym
+build/*.map
+build/*.prg
+build/*.bin
+
+# Python
 __pycache__/
 *.pyc
-build/*.sym
