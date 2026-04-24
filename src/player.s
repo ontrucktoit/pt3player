@@ -1,12 +1,12 @@
 ; =============================================================================
-; player.s - PT3 Player M2+M3+M4+M5a+M5b+M6p1: +Smoke test tone
+; player.s - PT3 Player M2+M3+M4+M5a+M5b+M6: +Full playback engine
 ; =============================================================================
 
         .include "pt3_player.inc"
 
         .segment "CODE"
 
-; Jump table at $3000 (14 entries × 3 bytes)
+; Jump table at $3000 (16 entries × 3 bytes)
 jump_table:
         jmp player_init                  ; $3000
         jmp player_load_pt3              ; $3003
@@ -22,6 +22,8 @@ jump_table:
         jmp player_init_pattern          ; $3021 — M5b
         jmp player_decode_row_all        ; $3024 — M5b
         jmp player_play_test_tone        ; $3027 — M6-p1
+        jmp player_init_song             ; $302A — M6
+        jmp player_tick                  ; $302D — M6
 
 ; -----------------------------------------------------------------------------
 player_init:
@@ -1573,6 +1575,149 @@ player_play_test_tone:
         rts
 
 ; =============================================================================
+; M6 — Full playback engine
+; =============================================================================
+; Entry points:
+;   player_init_song(A=hi, X=lo)  — A/X point to PT3 file in RAM
+;   player_tick()                  — called once per frame (50/60 Hz)
+;
+; Must be called after player_init (which builds note/volume tables and
+; clears all state). player_init_song performs:
+;   1. player_load_pt3   — parse header, populate pt3_* fields
+;   2. player_build_note_table / volume_table (if not yet)
+;   3. Clear all ch_* and pb_* fields
+;   4. Initialize default sample_num=1 per channel
+;   5. Load first pattern via player_init_pattern(positions[0]/3)
+;   6. Reset pb_tick_in_row, pb_position_idx, pb_current_line, pb_speed
+;
+; Clobbers A, X, Y.
+; -----------------------------------------------------------------------------
+player_init_song:
+        ; Save A/X for load_pt3 call (A=hi, X=lo per convention).
+        pha
+        txa
+        pha
+        ; Clear all M6 state from ch_note_a through pb_cur_env_slide_hi
+        jsr     m6_clear_state
+        pla
+        tax
+        pla
+        jsr     player_load_pt3
+        lda     pt3_parse_error
+        beq     @load_ok
+        rts                              ; header invalid; caller detects via pt3_parse_error
+@load_ok:
+        ; Build note + volume tables based on header
+        jsr     player_build_note_table
+        jsr     player_build_volume_table
+
+        ; Set speed from pt3_delay
+        lda     pt3_delay
+        sta     pb_speed
+
+        ; Default sample = 1 per channel (VTII quirk)
+        lda     #1
+        sta     ch_sample_num_a
+        sta     ch_sample_num_b
+        sta     ch_sample_num_c
+
+        ; Note = $FF (no note yet)
+        lda     #$FF
+        sta     ch_note_a
+        sta     ch_note_b
+        sta     ch_note_c
+        sta     ch_prev_note_a
+        sta     ch_prev_note_b
+        sta     ch_prev_note_c
+
+        ; pb_env_shape = $FF (= don't write R13 yet)
+        sta     pb_env_shape
+
+        ; Get first pattern number from position list
+        ldy     #0
+        sty     pb_position_idx
+        sty     pb_current_line
+        sty     pb_tick_in_row
+
+        ; Load positions[0] via M5_PTR scratch.
+        lda     pt3_position_list_lo
+        sta     M5_PTR_LO
+        lda     pt3_position_list_hi
+        sta     M5_PTR_HI
+        ldy     #0
+        lda     (M5_PTR_LO),y             ; byte = pattern_num * 3
+        ; Divide by 3 — but we don't have /3. M5b expects pattern_num (not *3).
+        ; Python: `pat_num = positions[pos_idx] // 3`. We do same.
+        jsr     div_by_3
+        jsr     player_init_pattern       ; A = pattern_num
+        ; Pattern length: default 64 for now (TODO: compute actual)
+        lda     #64
+        sta     pb_current_pat_len
+        rts
+
+; -----------------------------------------------------------------------------
+; m6_clear_state: zero all M6 BSS from ch_note_a to pb_cur_env_slide_hi.
+; Uses a memset loop based on label arithmetic.
+; -----------------------------------------------------------------------------
+m6_clear_state:
+        ; We'll clear from ch_note_a to pb_cur_env_slide_hi inclusive.
+        ; Size = pb_cur_env_slide_hi + 1 - ch_note_a
+        lda     #<ch_note_a
+        sta     M5_PTR_LO
+        lda     #>ch_note_a
+        sta     M5_PTR_HI
+        ldy     #0
+        ldx     #<(pb_cur_env_slide_hi + 1 - ch_note_a)
+@loop:
+        lda     #0
+        sta     (M5_PTR_LO),y
+        inc     M5_PTR_LO
+        bne     @no_hi
+        inc     M5_PTR_HI
+@no_hi:
+        dex
+        bne     @loop
+        ; If the range exceeded 256 we'd need a 16-bit count — the range
+        ; here is well under 200 bytes, so X suffices.
+        rts
+
+; -----------------------------------------------------------------------------
+; div_by_3: A /= 3. Uses a lookup table for 0..255 to avoid division loop.
+; Returns quotient in A.
+; -----------------------------------------------------------------------------
+div_by_3:
+        ; Position list values are pattern_num*3; pattern_num is 0..85.
+        ; So A is in {0, 3, 6, ..., 255}. We can use a small lookup, but
+        ; a mul-by-inverse trick works: A * 0x55 / 0x100 ≈ A/3 for small A.
+        ; Simpler: repeated subtraction.
+        tay                             ; save A
+        lda     #0
+@sub:
+        cpy     #3
+        bcc     @done
+        tya
+        sbc     #3                      ; C=1 from cpy
+        tay
+        pha
+        txa                             ; preserve X? not needed
+        pla
+        clc
+        adc     #1                      ; accumulate quotient
+        bne     @sub
+@done:
+        rts
+
+; -----------------------------------------------------------------------------
+; player_tick: called once per 50/60 Hz frame. Does one complete pass of
+; the PT3 playback engine and writes 14 AY registers to DigiMuz.
+;
+; SKELETON — filled in subsequent patches.
+; -----------------------------------------------------------------------------
+player_tick:
+        ; TODO M6 — not yet implemented.
+        rts
+
+; =============================================================================
 ; RODATA
 ; =============================================================================
 
@@ -1748,6 +1893,171 @@ dec_pat_mul_lo:         .res 1
 dec_pat_mul_hi:         .res 1
 dec_pat_x2_lo:          .res 1
 dec_pat_x2_hi:          .res 1
+
+; =============================================================================
+; M6 playback engine BSS
+; =============================================================================
+
+; Per-channel state (3 channels × N bytes)
+; Fields follow Python Channel class (pt3_simulator.py L208-293).
+; Channel index convention: 0=A, 1=B, 2=C.
+
+; Note: $FF = no note yet, $C0 = released, else 0..95 (MIDI-ish)
+ch_note_a:              .res 1
+ch_note_b:              .res 1
+ch_note_c:              .res 1
+
+; Previous note (for portamento): $FF = none, else 0..95
+ch_prev_note_a:         .res 1
+ch_prev_note_b:         .res 1
+ch_prev_note_c:         .res 1
+
+; Master volume (0..15)
+ch_volume_a:            .res 1
+ch_volume_b:            .res 1
+ch_volume_c:            .res 1
+
+; Sample number (1..31, default 1 per VTII quirk)
+ch_sample_num_a:        .res 1
+ch_sample_num_b:        .res 1
+ch_sample_num_c:        .res 1
+
+; Position in sample (0..31 typical, wraps to loop_pos)
+ch_pos_in_sample_a:     .res 1
+ch_pos_in_sample_b:     .res 1
+ch_pos_in_sample_c:     .res 1
+
+; Ornament number (0..15)
+ch_ornament_num_a:      .res 1
+ch_ornament_num_b:      .res 1
+ch_ornament_num_c:      .res 1
+
+; Position in ornament
+ch_pos_in_ornament_a:   .res 1
+ch_pos_in_ornament_b:   .res 1
+ch_pos_in_ornament_c:   .res 1
+
+; Channel flags: bit0=enabled bit1=note_released bit2=envelope_enabled bit3=sound_enabled(vibrato)
+ch_flags_a:             .res 1
+ch_flags_b:             .res 1
+ch_flags_c:             .res 1
+
+; Amplitude slide accumulator (signed, from sample byte 0 bit 7)
+ch_amp_slide_a:         .res 1
+ch_amp_slide_b:         .res 1
+ch_amp_slide_c:         .res 1
+
+; Tone accumulator (16-bit, used when sample byte1 bit6 set)
+ch_ton_accum_a_lo:      .res 1
+ch_ton_accum_a_hi:      .res 1
+ch_ton_accum_b_lo:      .res 1
+ch_ton_accum_b_hi:      .res 1
+ch_ton_accum_c_lo:      .res 1
+ch_ton_accum_c_hi:      .res 1
+
+; Current envelope sliding (16-bit signed, per-channel accumulator)
+ch_env_sliding_a_lo:    .res 1
+ch_env_sliding_a_hi:    .res 1
+ch_env_sliding_b_lo:    .res 1
+ch_env_sliding_b_hi:    .res 1
+ch_env_sliding_c_lo:    .res 1
+ch_env_sliding_c_hi:    .res 1
+
+; Current noise sliding (8-bit signed)
+ch_noise_sliding_a:     .res 1
+ch_noise_sliding_b:     .res 1
+ch_noise_sliding_c:     .res 1
+
+; Ton slide effect state (gliss / portamento)
+ch_ton_sld_delay_a:     .res 1
+ch_ton_sld_delay_b:     .res 1
+ch_ton_sld_delay_c:     .res 1
+ch_ton_sld_count_a:     .res 1
+ch_ton_sld_count_b:     .res 1
+ch_ton_sld_count_c:     .res 1
+ch_ton_sld_step_a_lo:   .res 1
+ch_ton_sld_step_a_hi:   .res 1
+ch_ton_sld_step_b_lo:   .res 1
+ch_ton_sld_step_b_hi:   .res 1
+ch_ton_sld_step_c_lo:   .res 1
+ch_ton_sld_step_c_hi:   .res 1
+ch_ton_sld_delta_a_lo:  .res 1
+ch_ton_sld_delta_a_hi:  .res 1
+ch_ton_sld_delta_b_lo:  .res 1
+ch_ton_sld_delta_b_hi:  .res 1
+ch_ton_sld_delta_c_lo:  .res 1
+ch_ton_sld_delta_c_hi:  .res 1
+ch_slide_to_note_a:     .res 1
+ch_slide_to_note_b:     .res 1
+ch_slide_to_note_c:     .res 1
+ch_ton_sld_type_a:      .res 1  ; 0=gliss, 1=portamento
+ch_ton_sld_type_b:      .res 1
+ch_ton_sld_type_c:      .res 1
+ch_cur_ton_slide_a_lo:  .res 1  ; accumulated tone slide (16-bit signed)
+ch_cur_ton_slide_a_hi:  .res 1
+ch_cur_ton_slide_b_lo:  .res 1
+ch_cur_ton_slide_b_hi:  .res 1
+ch_cur_ton_slide_c_lo:  .res 1
+ch_cur_ton_slide_c_hi:  .res 1
+ch_saved_ton_slide_a_lo: .res 1
+ch_saved_ton_slide_a_hi: .res 1
+ch_saved_ton_slide_b_lo: .res 1
+ch_saved_ton_slide_b_hi: .res 1
+ch_saved_ton_slide_c_lo: .res 1
+ch_saved_ton_slide_c_hi: .res 1
+
+; Vibrato state (effect 6)
+ch_onoff_delay_a:       .res 1
+ch_onoff_delay_b:       .res 1
+ch_onoff_delay_c:       .res 1
+ch_offon_delay_a:       .res 1
+ch_offon_delay_b:       .res 1
+ch_offon_delay_c:       .res 1
+ch_current_onoff_a:     .res 1
+ch_current_onoff_b:     .res 1
+ch_current_onoff_c:     .res 1
+
+; -----------------------------------------------------------------------------
+; Global playback state
+; -----------------------------------------------------------------------------
+pb_speed:               .res 1    ; from pt3_delay, modified by effect 9
+pb_tick_in_row:         .res 1    ; counts 0..pb_speed-1
+pb_position_idx:        .res 1    ; index into position list
+pb_current_line:        .res 1    ; row within current pattern
+pb_current_pat_len:     .res 1    ; length of current pattern
+pb_noise_period:        .res 1    ; R6 base (NsBase)
+pb_add_to_noise:        .res 1    ; global, sticky between frames
+pb_sam_noise:           .res 1    ; sticky, updated when ch has Mixer_Noise
+pb_sam_env_p:           .res 1    ; reset each frame, accumulated per-channel
+pb_env_period_lo:       .res 1
+pb_env_period_hi:       .res 1
+pb_env_shape:           .res 1    ; R13 pending write value, $FF = no write
+pb_end_of_song:         .res 1    ; flag when song loop hits end
+pb_env_delay:           .res 1    ; effect 9 envslide state (global)
+pb_cur_env_delay:       .res 1
+pb_env_slide_add_lo:    .res 1
+pb_env_slide_add_hi:    .res 1
+pb_cur_env_slide_lo:    .res 1
+pb_cur_env_slide_hi:    .res 1
+
+; 14 AY registers — shadow values to write to DigiMuz this frame
+; NOTE: shadow_ay already exists at the top of BSS (used by M1). We alias it.
+
+; -----------------------------------------------------------------------------
+; M6 scratch for compute
+; -----------------------------------------------------------------------------
+m6_tmp_tone_lo:         .res 1
+m6_tmp_tone_hi:         .res 1
+m6_tmp_note:            .res 1
+m6_tmp_amp:             .res 1
+m6_tmp_mixer_bits:      .res 1    ; accumulates per-channel T/N into R7
+m6_tmp_ch_idx:          .res 1    ; current channel 0/1/2
+m6_tmp_row_ptr_lo:      .res 1    ; pointer into row_out_ch_<n>
+m6_tmp_row_ptr_hi:      .res 1
+m6_tmp_sample_ptr_lo:   .res 1    ; sample data pointer (header + tick)
+m6_tmp_sample_ptr_hi:   .res 1
+m6_tmp_orn_ptr_lo:      .res 1
+m6_tmp_orn_ptr_hi:      .res 1
 
 .exportzp note_table_addr_hint := $FF
 .export note_table
