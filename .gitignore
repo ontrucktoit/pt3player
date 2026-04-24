@@ -1,0 +1,18 @@
+# Build artifacts
+*.o
+*.prg
+*.bin
+*.lst
+*.map
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+*~
+__pycache__/
+*.pyc
+
+# Temporary test output
+/tmp_output/
+/build/
