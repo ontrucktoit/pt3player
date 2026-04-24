@@ -1,12 +1,12 @@
 ; =============================================================================
-; player.s - PT3 Player M2+M3+M4: Note Table + Volume Table + Header Parser
+; player.s - PT3 Player M2+M3+M4+M5a: +Pattern Row Decoder (single channel)
 ; =============================================================================
 
         .include "pt3_player.inc"
 
         .segment "CODE"
 
-; Jump table at $3000 (10 entries × 3 bytes)
+; Jump table at $3000 (11 entries × 3 bytes)
 jump_table:
         jmp player_init                  ; $3000
         jmp player_load_pt3              ; $3003
@@ -18,6 +18,7 @@ jump_table:
         jmp player_set_flags             ; $3015
         jmp player_build_note_table      ; $3018 — M2
         jmp player_build_volume_table    ; $301B — M3
+        jmp player_decode_row            ; $301E — M5a
 
 ; -----------------------------------------------------------------------------
 player_init:
@@ -718,6 +719,494 @@ player_build_volume_table:
         rts
 
 ; =============================================================================
+; player_decode_row(A = channel_idx)
+; =============================================================================
+; Decode next row for given channel from stream in ZP_STREAM_<ch>_LO/HI.
+; Fills row_out_ch_<ch> BSS struct with opcodes consumed this row.
+; Advances ZP pointer past all consumed bytes (including SPC_CMD params).
+;
+; Returns A:
+;   0   = row decoded successfully
+;   1   = end-of-pattern (0x00 at row start, nothing decoded)
+;   $FF = truncation (ran out of file data mid-row)
+; -----------------------------------------------------------------------------
+player_decode_row:
+        sta     dec_current_ch
+
+        ; Select ZP stream pointer based on channel_idx.
+        ; We use dec_zp_ptr_lo as a VARIABLE holding the ZP base (value $D8/$DA/$DC)
+        ; which we then use to address ZP_STREAM via (zp_addr_lo_var),y.
+        ; Trick: store the ZP stream pointer address (low byte in ZP is ZP_STREAM_?_LO).
+        ; We'll load/store directly using two LDA/STA chains per channel for simplicity.
+        ;
+        ; The common code reads ZP stream ptr LO/HI via a 2-byte ZP slot at
+        ; M5_PTR_LO/hi which we keep synced with the per-channel ZP_STREAM_?_LO/HI.
+        ; On entry: copy ZP_STREAM to dec_ptr. On exit: copy dec_ptr back to ZP_STREAM.
+
+        lda     dec_current_ch
+        beq     @use_a
+        cmp     #1
+        beq     @use_b
+        ; channel C
+        lda     ZP_STREAM_C_LO
+        sta     M5_PTR_LO
+        lda     ZP_STREAM_C_HI
+        sta     M5_PTR_HI
+        ; Set up pointer to row_out_ch_c
+        lda     #<row_out_ch_c
+        sta     M5_OUT_LO
+        lda     #>row_out_ch_c
+        sta     M5_OUT_HI
+        jmp     @have_ptrs
+@use_a:
+        lda     ZP_STREAM_A_LO
+        sta     M5_PTR_LO
+        lda     ZP_STREAM_A_HI
+        sta     M5_PTR_HI
+        lda     #<row_out_ch_a
+        sta     M5_OUT_LO
+        lda     #>row_out_ch_a
+        sta     M5_OUT_HI
+        jmp     @have_ptrs
+@use_b:
+        lda     ZP_STREAM_B_LO
+        sta     M5_PTR_LO
+        lda     ZP_STREAM_B_HI
+        sta     M5_PTR_HI
+        lda     #<row_out_ch_b
+        sta     M5_OUT_LO
+        lda     #>row_out_ch_b
+        sta     M5_OUT_HI
+
+@have_ptrs:
+        ; Fill row_out with sentinels ($FF for most, 0 for orn_expl_zero, spec_cmd)
+        ldy     #0
+        lda     #$FF
+        sta     (M5_OUT_LO),y       ; +0 row_note
+        iny
+        sta     (M5_OUT_LO),y       ; +1 row_sample
+        iny
+        sta     (M5_OUT_LO),y       ; +2 row_env_type
+        iny
+        sta     (M5_OUT_LO),y       ; +3 row_ornament
+        iny
+        lda     #0
+        sta     (M5_OUT_LO),y       ; +4 row_orn_expl_zero
+        iny
+        lda     #$FF
+        sta     (M5_OUT_LO),y       ; +5 row_volume
+        iny
+        sta     (M5_OUT_LO),y       ; +6 row_env_period_lo
+        iny
+        sta     (M5_OUT_LO),y       ; +7 row_env_period_hi
+        iny
+        sta     (M5_OUT_LO),y       ; +8 row_noise_period
+        iny
+        lda     #0
+        sta     (M5_OUT_LO),y       ; +9 row_spec_cmd
+        iny
+        sta     (M5_OUT_LO),y       ; +10 row_spec_param0
+        iny
+        sta     (M5_OUT_LO),y       ; +11 row_spec_param1
+
+        lda     #0
+        sta     dec_pending_count
+
+; ---------- Main decode loop: read opcodes until row terminator or $00 ----------
+@decode_loop:
+        ; Fetch next byte via (dec_ptr),y with y=0
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        ; Advance dec_ptr (16-bit increment)
+        inc     M5_PTR_LO
+        bne     @no_hi_bump
+        inc     M5_PTR_HI
+@no_hi_bump:
+        ; A = opcode, dispatch by range
+        ; Dispatch: $00, $01-$0F, $10, $11-$1F, $20-$3F, $40-$4F,
+        ;           $50-$AF (NOTE, row term),
+        ;           $B0, $B1, $B2-$BF, $C0, $C1-$CF, $D0, $D1-$EF, $F0-$FF
+
+        cmp     #$50
+        bcc     @below_50                ; $00..$4F
+        cmp     #$B0
+        bcs     @ge_b0
+        ; $50..$AF: NOTE
+        sec
+        sbc     #$50                     ; note = b - $50
+        ldy     #0
+        sta     (M5_OUT_LO),y       ; row_note = note
+        jmp     @row_terminator_reached
+
+@ge_b0:
+        cmp     #$C0
+        bcs     @ge_c0
+        jmp     @range_b0_bf
+@ge_c0:
+        cmp     #$D0
+        bcs     @ge_d0
+        jmp     @range_c0_cf
+@ge_d0:
+        cmp     #$F0
+        bcs     @ge_f0
+        jmp     @range_d0_ef
+@ge_f0:
+        jmp     @range_f0_ff
+
+; ---- $00..$4F ----
+@below_50:
+        cmp     #$10
+        bcc     @below_10
+        cmp     #$20
+        bcc     @range_10_1f
+        cmp     #$40
+        bcc     @range_20_3f
+        jmp     @range_40_4f
+
+@below_10:
+        ; A = $00..$0F
+        cmp     #$01
+        bcs     @range_01_0f
+        ; A == $00: END_OF_PATTERN
+        jmp     @end_of_pattern
+
+@range_01_0f:
+        ; SPC_CMD: queue for post-terminator consumption
+        ; We only save first 2 (pending_count capped at 2). Extra silently dropped.
+        ldx     dec_pending_count
+        cpx     #2
+        bcs     @spc_full
+        sta     dec_pending_spec0,x
+        inx
+        stx     dec_pending_count
+@spc_full:
+        jmp     @decode_loop
+
+@range_10_1f:
+        ; PD_ESAM: $10 = env off + 1 sample byte. $11-$1F = env + 2-byte env_period + 1 sample byte.
+        cmp     #$10
+        bne     @esam_with_period
+
+        ; $10: env explicit OFF, no env_period; sample byte follows
+        lda     #$0F
+        ldy     #2
+        sta     (M5_OUT_LO),y       ; row_env_type = $0F
+        jmp     @esam_read_sample
+
+@esam_with_period:
+        ; A = $11..$1F; row_env_type = A - $10
+        sec
+        sbc     #$10
+        ldy     #2
+        sta     (M5_OUT_LO),y       ; row_env_type
+
+        ; Read env_period (2 bytes BIG-endian: hi first, lo second)
+        ldy     #0
+        lda     (M5_PTR_LO),y           ; hi byte
+        ldy     #7
+        sta     (M5_OUT_LO),y       ; row_env_period_hi
+        inc     M5_PTR_LO
+        bne     @esam_no_bump1
+        inc     M5_PTR_HI
+@esam_no_bump1:
+        ldy     #0
+        lda     (M5_PTR_LO),y           ; lo byte
+        ldy     #6
+        sta     (M5_OUT_LO),y       ; row_env_period_lo
+        inc     M5_PTR_LO
+        bne     @esam_read_sample
+        inc     M5_PTR_HI
+
+@esam_read_sample:
+        ; sample byte: row_sample = byte >> 1
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        lsr     a
+        ldy     #1
+        sta     (M5_OUT_LO),y       ; row_sample
+        inc     M5_PTR_LO
+        bne     @esam_done
+        inc     M5_PTR_HI
+@esam_done:
+        jmp     @decode_loop
+
+@range_20_3f:
+        ; NOISE: row_noise_period = A - $20
+        sec
+        sbc     #$20
+        ldy     #8
+        sta     (M5_OUT_LO),y
+        jmp     @decode_loop
+
+@range_40_4f:
+        ; ORN: $40 = disable ornament (env off + orn_expl_zero). $41-$4F = orn 1..15.
+        cmp     #$40
+        bne     @orn_nonzero
+
+        ; $40: disable ornament
+        ldy     #2
+        lda     (M5_OUT_LO),y       ; current row_env_type
+        cmp     #$FF                     ; was "no env" ?
+        bne     @orn0_no_env_override
+        lda     #$0F
+        sta     (M5_OUT_LO),y       ; set env off
+@orn0_no_env_override:
+        lda     #1
+        ldy     #4
+        sta     (M5_OUT_LO),y       ; row_orn_expl_zero = 1
+        jmp     @decode_loop
+
+@orn_nonzero:
+        sec
+        sbc     #$40
+        ldy     #3
+        sta     (M5_OUT_LO),y       ; row_ornament
+        jmp     @decode_loop
+
+; ---- $B0..$BF ----
+@range_b0_bf:
+        ; $B0: env off. $B1: SKIP (+1 byte). $B2-$BF: SETENV (+2 bytes env_period).
+        cmp     #$B0
+        bne     @b0_not
+        lda     #$0F
+        ldy     #2
+        sta     (M5_OUT_LO),y       ; row_env_type
+        jmp     @decode_loop
+@b0_not:
+        cmp     #$B1
+        bne     @setenv
+        ; SKIP: next byte -> ch_nn_skip_<ch>. M5a stores but doesn't act on it.
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        ldx     dec_current_ch
+        sta     ch_nn_skip_a,x
+        inc     M5_PTR_LO
+        bne     @skip_done
+        inc     M5_PTR_HI
+@skip_done:
+        jmp     @decode_loop
+
+@setenv:
+        ; $B2..$BF: row_env_type = (A & $0F) - 1
+        and     #$0F
+        sec
+        sbc     #1
+        ldy     #2
+        sta     (M5_OUT_LO),y
+        ; Read env_period 2-byte BE (hi then lo)
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        ldy     #7
+        sta     (M5_OUT_LO),y       ; env_period_hi
+        inc     M5_PTR_LO
+        bne     @se_bump1_done
+        inc     M5_PTR_HI
+@se_bump1_done:
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        ldy     #6
+        sta     (M5_OUT_LO),y       ; env_period_lo
+        inc     M5_PTR_LO
+        bne     @se_bump2_done
+        inc     M5_PTR_HI
+@se_bump2_done:
+        jmp     @decode_loop
+
+; ---- $C0..$CF ----
+@range_c0_cf:
+        cmp     #$C0
+        bne     @vol
+        ; $C0: RELEASE — row terminator, row_note = $C0
+        lda     #$C0
+        ldy     #0
+        sta     (M5_OUT_LO),y
+        jmp     @row_terminator_reached
+@vol:
+        ; $C1..$CF: row_volume = A - $C0
+        sec
+        sbc     #$C0
+        ldy     #5
+        sta     (M5_OUT_LO),y
+        jmp     @decode_loop
+
+; ---- $D0..$EF ----
+@range_d0_ef:
+        cmp     #$D0
+        bne     @sample_only
+        ; $D0: END_OF_ROW explicit
+        jmp     @row_terminator_reached
+@sample_only:
+        ; $D1..$EF: row_sample = A - $D0
+        sec
+        sbc     #$D0
+        ldy     #1
+        sta     (M5_OUT_LO),y
+        jmp     @decode_loop
+
+; ---- $F0..$FF ----
+@range_f0_ff:
+        ; ORN+SAM: orn = A - $F0. env off always. If orn=0: orn_expl_zero=1. Else row_ornament=orn.
+        ; Then 1 sample byte: row_sample = byte >> 1.
+        and     #$0F
+        tax                              ; X = orn
+        lda     #$0F
+        ldy     #2
+        sta     (M5_OUT_LO),y       ; row_env_type = $0F
+        cpx     #0
+        bne     @orsm_nonzero
+        lda     #1
+        ldy     #4
+        sta     (M5_OUT_LO),y       ; row_orn_expl_zero = 1
+        jmp     @orsm_read_sample
+@orsm_nonzero:
+        txa
+        ldy     #3
+        sta     (M5_OUT_LO),y       ; row_ornament
+@orsm_read_sample:
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        lsr     a
+        ldy     #1
+        sta     (M5_OUT_LO),y       ; row_sample
+        inc     M5_PTR_LO
+        bne     @orsm_done
+        inc     M5_PTR_HI
+@orsm_done:
+        jmp     @decode_loop
+
+; ---- Row terminator reached: consume SPC_CMD params ----
+@row_terminator_reached:
+        ; For each queued SPC_CMD (in dec_pending_spec0..1), consume N params
+        ; where N = SPC_CMD_PARAM_BYTES[cmd]. For cmds with >=1 param, store
+        ; the first two bytes into row_spec_param0/1; row_spec_cmd = cmd.
+        ; Last queued cmd wins (overwrites earlier ones) — matches Python.
+
+        lda     dec_pending_count
+        beq     @done_ok
+
+        ; Process first pending spec
+        lda     dec_pending_spec0
+        jsr     consume_spec_params
+
+        lda     dec_pending_count
+        cmp     #2
+        bcc     @done_ok
+
+        ; Process second pending spec
+        lda     dec_pending_spec1
+        jsr     consume_spec_params
+
+@done_ok:
+        ; Copy dec_ptr back to ZP_STREAM_<ch>_LO/HI
+        lda     dec_current_ch
+        beq     @save_a
+        cmp     #1
+        beq     @save_b
+        lda     M5_PTR_LO
+        sta     ZP_STREAM_C_LO
+        lda     M5_PTR_HI
+        sta     ZP_STREAM_C_HI
+        lda     #0
+        rts
+@save_a:
+        lda     M5_PTR_LO
+        sta     ZP_STREAM_A_LO
+        lda     M5_PTR_HI
+        sta     ZP_STREAM_A_HI
+        lda     #0
+        rts
+@save_b:
+        lda     M5_PTR_LO
+        sta     ZP_STREAM_B_LO
+        lda     M5_PTR_HI
+        sta     ZP_STREAM_B_HI
+        lda     #0
+        rts
+
+@end_of_pattern:
+        ; Save ptr back and return 1
+        lda     dec_current_ch
+        beq     @eop_save_a
+        cmp     #1
+        beq     @eop_save_b
+        lda     M5_PTR_LO
+        sta     ZP_STREAM_C_LO
+        lda     M5_PTR_HI
+        sta     ZP_STREAM_C_HI
+        lda     #1
+        rts
+@eop_save_a:
+        lda     M5_PTR_LO
+        sta     ZP_STREAM_A_LO
+        lda     M5_PTR_HI
+        sta     ZP_STREAM_A_HI
+        lda     #1
+        rts
+@eop_save_b:
+        lda     M5_PTR_LO
+        sta     ZP_STREAM_B_LO
+        lda     M5_PTR_HI
+        sta     ZP_STREAM_B_HI
+        lda     #1
+        rts
+
+; -----------------------------------------------------------------------------
+; consume_spec_params(A = cmd)
+; Consumes SPC_CMD_PARAM_BYTES[cmd] bytes from dec_ptr.
+; Stores first 2 param bytes in row_spec_param0/1. Sets row_spec_cmd = cmd.
+; Clobbers A, X, Y.
+; -----------------------------------------------------------------------------
+consume_spec_params:
+        ; Save cmd for writing row_spec_cmd
+        sta     dec_spc_cmd_save
+
+        ; Look up param count: SPC_CMD_PARAM_TABLE[cmd]
+        tax
+        lda     SPC_CMD_PARAM_TABLE,x
+        sta     dec_spc_nparam
+        beq     @spc_done_write_cmd      ; 0 params, just record cmd
+
+        ; Read up to 2 params, skip any extra
+        ; 1st param:
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        ldy     #10
+        sta     (M5_OUT_LO),y       ; row_spec_param0
+        inc     M5_PTR_LO
+        bne     @sp1_no_bump
+        inc     M5_PTR_HI
+@sp1_no_bump:
+        dec     dec_spc_nparam
+        beq     @spc_done_write_cmd
+
+        ; 2nd param:
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        ldy     #11
+        sta     (M5_OUT_LO),y       ; row_spec_param1
+        inc     M5_PTR_LO
+        bne     @sp2_no_bump
+        inc     M5_PTR_HI
+@sp2_no_bump:
+        dec     dec_spc_nparam
+        beq     @spc_done_write_cmd
+
+        ; Skip remaining params
+@skip_extra:
+        inc     M5_PTR_LO
+        bne     @skip_no_bump
+        inc     M5_PTR_HI
+@skip_no_bump:
+        dec     dec_spc_nparam
+        bne     @skip_extra
+
+@spc_done_write_cmd:
+        lda     dec_spc_cmd_save
+        ldy     #9
+        sta     (M5_OUT_LO),y       ; row_spec_cmd
+        rts
+
+; =============================================================================
 ; RODATA
 ; =============================================================================
 
@@ -773,6 +1262,27 @@ NT_SELECTOR_RAW:
         .word   TCNEW_3_CHAIN
         .byte   96                        ; table=3 OLD: raw=96
         .word   TCOLD_3_LIST
+
+; SPC_CMD parameter byte counts (indexed by cmd 0..15)
+; Matches Python SPC_CMD_PARAM_BYTES.
+; cmd 0 is N/A (0 is END_OF_PATTERN, not a spec cmd), but kept as 0 for safety.
+SPC_CMD_PARAM_TABLE:
+        .byte   0       ; cmd 0 — unused
+        .byte   3       ; cmd 1 GLISS
+        .byte   5       ; cmd 2 PORTM
+        .byte   1       ; cmd 3 SMPOS
+        .byte   1       ; cmd 4 ORPOS
+        .byte   2       ; cmd 5 VIBRT
+        .byte   0       ; cmd 6
+        .byte   0       ; cmd 7
+        .byte   3       ; cmd 8 ENGLS
+        .byte   1       ; cmd 9 DELAY
+        .byte   0       ; cmd 10
+        .byte   0       ; cmd 11
+        .byte   0       ; cmd 12
+        .byte   0       ; cmd 13
+        .byte   0       ; cmd 14
+        .byte   0       ; cmd 15
 
 ; =============================================================================
 ; BSS
@@ -844,6 +1354,25 @@ pt3_position_list_lo:   .res 1
 pt3_position_list_hi:   .res 1
 pt3_parse_error:        .res 1
 
+; M5a pattern decoder state
+row_out_ch_a:           .res 12
+row_out_ch_b:           .res 12
+row_out_ch_c:           .res 12
+
+ch_nn_skip_a:           .res 1
+ch_nn_skip_b:           .res 1
+ch_nn_skip_c:           .res 1
+ch_end_flag_a:          .res 1
+ch_end_flag_b:          .res 1
+ch_end_flag_c:          .res 1
+
+dec_current_ch:         .res 1
+dec_pending_spec0:      .res 1
+dec_pending_spec1:      .res 1
+dec_pending_count:      .res 1
+dec_spc_cmd_save:       .res 1
+dec_spc_nparam:         .res 1
+
 .exportzp note_table_addr_hint := $FF
 .export note_table
 .export volume_table
@@ -859,3 +1388,7 @@ pt3_parse_error:        .res 1
 .export pt3_ornament_table_lo
 .export pt3_position_list_lo
 .export pt3_parse_error
+.export row_out_ch_a
+.export row_out_ch_b
+.export row_out_ch_c
+.export ch_nn_skip_a
