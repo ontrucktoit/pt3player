@@ -158,3 +158,81 @@ the rest). Worth a cleanup pass later but not blocking.
 3. Real Plus/4 hardware: deferred, low risk (YAPE matches real HW)
 
 Ready for M2.
+
+---
+
+## Session 5 — 2026-04-24: M2 Note Table Generator
+
+### M2 — Note Table Runtime Generator — PASS ✓ (8/8 bit-exact)
+
+Ported Ivan Roshin's `NoteTableCreator` from Python reference (pt3_tables.py)
+to CA65 assembly. Full bit-exact match against VTII-validated Python output
+for all 8 combinations (4 tone tables × 2 version flags).
+
+New public API:
+```
+player_build_note_table(A = tone_table_idx, X = version_is_old)
+  → fills note_table at $3327 with 192 bytes (96 notes × 2 bytes LE)
+```
+
+Algorithm in 3 phases (each a separate subroutine):
+
+1. **depack_t_pack** (depack T_PACK seed data into t1_buf):
+   - Walks T_PACK_DATA bytes, distinguishing delta (>=30) from absolute (<30)
+   - Writes backwards into 98-byte t1_buf, matching Z80 asm behavior
+   - Terminates on low byte == $F0
+
+2. **generate_notes** (build 96-note frequency table):
+   - 12 outer iterations (one per base note) × 8 inner iterations (octaves)
+   - 16-bit right-shift per octave using lsr/ror pair
+   - Conditional rounding-via-carry based on truncate flag (NT_SELECTOR bit 0)
+
+3. **apply_corrections** (per-note fixups):
+   - Walks nul-terminated correction list pointed to by NT_SELECTOR
+   - Each byte: LSB = sign (1=decrement), upper bits = word index
+   - Also handles TCNEW_3 → TCOLD_3 chain (no terminator in TCNEW_3)
+   - Special case: if table=1, force note_table[46] = $FD
+
+Test results (py65 harness):
+```
+table=0 NEW: 5548 steps, PASS
+table=0 OLD: 5660 steps, PASS
+table=1 NEW: 5502 steps, PASS
+table=1 OLD: 5502 steps, PASS
+table=2 NEW: 5564 steps, PASS
+table=2 OLD: 5649 steps, PASS
+table=3 NEW: 5532 steps, PASS
+table=3 OLD: 5516 steps, PASS
+```
+
+Note: ~5500 steps per invocation is the one-time init cost per loaded PT3
+file. Not in the critical path (IRQ handler).
+
+Code size after M2:
+- player.bin: 674 of 4096 bytes (16.5% budget used)
+- Remaining: 3422 bytes for M3-M11
+
+Bug found during development:
+- `(abs_label),y` indirect addressing doesn't exist on 6502 — only `(zp),y`
+- Workaround: copy BSS pointer (nt_corr_ptr) to ZP_TEMP before use
+- Pattern will recur in pattern decoder (3 per-channel stream pointers)
+
+Deterministic build confirmed: same source produces identical binary on
+Claude's sandbox (ca65 2.19) and Kris's server (ca65 2.18).
+
+### M2 real-world test pending
+
+Kris will YAPE-test `build/m2_test.prg`:
+- Boots, calls player_init, then player_build_note_table(1, 0)
+- Copies note_table[47*2..95] ($00FC) to shadow R0/R1
+- Hooks raster IRQ, idle loops
+- Expected: sustained tone at ~440 Hz (musically A-4 at 1.77 MHz AY clock)
+- Distinguishable from M1's ~433 Hz (hardcoded $0100) by slightly higher pitch
+
+### Next: M3 — Volume Table Generator
+
+Port `build_volume_table(pt_version)` from `pt3_tables.py`. Similar structure
+but more complex: 16-bit accumulator arithmetic (Z80 ADD HL,DE equivalent),
+conditional RLA in inner loop, IX register emulation. Expected ~500 bytes
+of code, 256 bytes of output table. Same validation pattern: 2 combinations
+(old/new volume table) bit-exact against Python reference.
