@@ -1,5 +1,5 @@
 ; =============================================================================
-; player.s - PT3 Player M2+M3: Note Table + Volume Table Generators
+; player.s - PT3 Player M2+M3+M4: Note Table + Volume Table + Header Parser
 ; =============================================================================
 
         .include "pt3_player.inc"
@@ -41,7 +41,165 @@ player_init:
         sta     playing_flag
         rts
 
+; =============================================================================
+; player_load_pt3(A = base_hi, X = base_lo)
+; =============================================================================
+; Parse PT3 header. Fills pt3_* BSS struct with absolute pointers.
+; Sets pt3_parse_error = 1 on bad file, 0 on success.
+;
+; Header layout (verified against real files):
+;   0x00..0x0C : signature "ProTracker 3." or "Vortex Tracker II"
+;   0x0D       : version char ('3'..'9' or other for Vortex)
+;   0x63       : tone_table (0..3)
+;   0x64       : initial_speed (delay)
+;   0x65       : num_positions
+;   0x66       : loop_position
+;   0x67..0x68 : patterns_ptr (LE, file-relative)
+;   0x69..0xA8 : sample_ptrs[32] (each 2 bytes LE, file-relative)
+;   0xA9..0xC8 : ornament_ptrs[16] (each 2 bytes LE, file-relative)
+;   0xC9..     : position list (num_positions bytes, each = pattern_num*3)
+; -----------------------------------------------------------------------------
 player_load_pt3:
+        ; Store base address: A=hi, X=lo
+        sta     pt3_base_hi
+        stx     pt3_base_lo
+
+        ; Copy base to ZP for (ZP),y indirect addressing
+        stx     ZP_TEMP_LO
+        sta     ZP_TEMP_HI
+
+        ; Assume error until proven otherwise
+        lda     #1
+        sta     pt3_parse_error
+
+        ; --- Sanity check: first 3 bytes = "Pro" or "Vor" ---
+        ldy     #0
+        lda     (ZP_TEMP_LO),y                  ; byte 0
+        cmp     #'P'
+        beq     @check_pro
+        cmp     #'V'
+        beq     @check_vor
+        rts                                      ; unknown signature, stay error=1
+
+@check_pro:
+        ; Expect "Pro" at 0,1,2
+        iny
+        lda     (ZP_TEMP_LO),y
+        cmp     #'r'
+        bne     @bad_sig
+        iny
+        lda     (ZP_TEMP_LO),y
+        cmp     #'o'
+        bne     @bad_sig
+        ; It's "Pro..." — compute features_level from char at 0x0D
+        ldy     #$0D
+        lda     (ZP_TEMP_LO),y
+        sta     pt3_version_char
+        ; '0'..'5' (0x30..0x35) -> level 0
+        ; '7'..'9' (0x37..0x39) -> level 2
+        ; else ('6' or any other) -> level 1
+        cmp     #'6'
+        beq     @fl_1
+        bcc     @fl_0                            ; < '6' means '0'..'5'
+        ; >= '7' ...
+        cmp     #':'                             ; ':' = '9'+1 = 0x3A
+        bcc     @fl_2                            ; '7','8','9'
+        ; fall through: >= ':', treat as level 1
+@fl_1:
+        lda     #1
+        sta     pt3_features_level
+        jmp     @parse_body
+@fl_0:
+        lda     #0
+        sta     pt3_features_level
+        jmp     @parse_body
+@fl_2:
+        lda     #2
+        sta     pt3_features_level
+        jmp     @parse_body
+
+@check_vor:
+        ; Expect "Vor" at 0,1,2
+        iny
+        lda     (ZP_TEMP_LO),y
+        cmp     #'o'
+        bne     @bad_sig
+        iny
+        lda     (ZP_TEMP_LO),y
+        cmp     #'r'
+        bne     @bad_sig
+        ; Vortex: version_char = raw byte at 0x0D, features_level = 1
+        ldy     #$0D
+        lda     (ZP_TEMP_LO),y
+        sta     pt3_version_char
+        lda     #1
+        sta     pt3_features_level
+        jmp     @parse_body
+
+@bad_sig:
+        rts                                      ; parse_error stays 1
+
+@parse_body:
+        ; --- Copy 4 bytes from 0x63..0x66 ---
+        ldy     #$63
+        lda     (ZP_TEMP_LO),y
+        sta     pt3_tone_table
+        iny
+        lda     (ZP_TEMP_LO),y
+        sta     pt3_delay
+        iny
+        lda     (ZP_TEMP_LO),y
+        sta     pt3_num_positions
+        iny                                      ; Y = $66
+        lda     (ZP_TEMP_LO),y
+        sta     pt3_loop_position
+
+        ; --- patterns_ptr: base + file[0x67:0x69] ---
+        ldy     #$67
+        lda     (ZP_TEMP_LO),y
+        clc
+        adc     pt3_base_lo
+        sta     pt3_patterns_ptr_lo
+        iny                                      ; Y = $68
+        lda     (ZP_TEMP_LO),y
+        adc     pt3_base_hi
+        sta     pt3_patterns_ptr_hi
+
+        ; --- sample_table = base + 0x69 ---
+        lda     pt3_base_lo
+        clc
+        adc     #$69
+        sta     pt3_sample_table_lo
+        lda     pt3_base_hi
+        adc     #0
+        sta     pt3_sample_table_hi
+
+        ; --- ornament_table = base + 0xA9 ---
+        lda     pt3_base_lo
+        clc
+        adc     #$A9
+        sta     pt3_ornament_table_lo
+        lda     pt3_base_hi
+        adc     #0
+        sta     pt3_ornament_table_hi
+
+        ; --- position_list = base + 0xC9 ---
+        lda     pt3_base_lo
+        clc
+        adc     #$C9
+        sta     pt3_position_list_lo
+        lda     pt3_base_hi
+        adc     #0
+        sta     pt3_position_list_hi
+
+        ; --- Sanity: num_positions > 0 ---
+        lda     pt3_num_positions
+        beq     @leave_err                       ; 0 positions -> error stays 1
+
+        ; All good
+        lda     #0
+        sta     pt3_parse_error
+@leave_err:
         rts
 
 player_play:
@@ -667,6 +825,37 @@ vt_tmp:                 .res 1
 
 volume_table:           .res 256
 
+; PT3 header parsed fields (M4)
+pt3_base_lo:            .res 1
+pt3_base_hi:            .res 1
+pt3_version_char:       .res 1
+pt3_features_level:     .res 1
+pt3_tone_table:         .res 1
+pt3_delay:              .res 1
+pt3_num_positions:      .res 1
+pt3_loop_position:      .res 1
+pt3_patterns_ptr_lo:    .res 1
+pt3_patterns_ptr_hi:    .res 1
+pt3_sample_table_lo:    .res 1
+pt3_sample_table_hi:    .res 1
+pt3_ornament_table_lo:  .res 1
+pt3_ornament_table_hi:  .res 1
+pt3_position_list_lo:   .res 1
+pt3_position_list_hi:   .res 1
+pt3_parse_error:        .res 1
+
 .exportzp note_table_addr_hint := $FF
 .export note_table
 .export volume_table
+.export pt3_base_lo
+.export pt3_version_char
+.export pt3_features_level
+.export pt3_tone_table
+.export pt3_delay
+.export pt3_num_positions
+.export pt3_loop_position
+.export pt3_patterns_ptr_lo
+.export pt3_sample_table_lo
+.export pt3_ornament_table_lo
+.export pt3_position_list_lo
+.export pt3_parse_error
