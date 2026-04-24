@@ -1,12 +1,12 @@
 ; =============================================================================
-; player.s - PT3 Player M2+M3+M4+M5a: +Pattern Row Decoder (single channel)
+; player.s - PT3 Player M2+M3+M4+M5a+M5b: +Skip/Multi-channel Driver
 ; =============================================================================
 
         .include "pt3_player.inc"
 
         .segment "CODE"
 
-; Jump table at $3000 (11 entries × 3 bytes)
+; Jump table at $3000 (13 entries × 3 bytes)
 jump_table:
         jmp player_init                  ; $3000
         jmp player_load_pt3              ; $3003
@@ -19,6 +19,8 @@ jump_table:
         jmp player_build_note_table      ; $3018 — M2
         jmp player_build_volume_table    ; $301B — M3
         jmp player_decode_row            ; $301E — M5a
+        jmp player_init_pattern          ; $3021 — M5b
+        jmp player_decode_row_all        ; $3024 — M5b
 
 ; -----------------------------------------------------------------------------
 player_init:
@@ -1207,6 +1209,290 @@ consume_spec_params:
         rts
 
 ; =============================================================================
+; player_init_pattern(A = pattern_number)
+; =============================================================================
+; Initialize channel state for playback of the given pattern number.
+; Must be called before first player_decode_row_all() of each pattern.
+;
+; Reads the patterns table at pt3_patterns_ptr_lo/hi to get the 3 file-relative
+; stream offsets for channels A/B/C, converts each to absolute by adding
+; pt3_base_lo/hi (high byte only; base is always $XX00), and stores them
+; in ZP_STREAM_<ch>_LO/HI.
+;
+; Also resets per-channel state:
+;   ch_nn_skip_<ch>        = 1  (default: decode every row)
+;   ch_skip_counter_<ch>   = 1  (decode on first tick)
+;   ch_end_flag_<ch>       = 0  (not ended)
+;
+; Clobbers A, X, Y.
+; -----------------------------------------------------------------------------
+player_init_pattern:
+        ; A = pattern_number. We need pat_ptr + pattern_number * 6.
+        ; pt3_patterns_ptr_lo/hi is already absolute (M4 converts).
+
+        ; Compute pattern_number * 6 into dec_pat_mul_lo/hi (16-bit).
+        sta     dec_pat_mul_lo          ; lo = pattern_number (X6 is small, 16-bit mult)
+        lda     #0
+        sta     dec_pat_mul_hi
+
+        ; * 6: (*2 + *4) = *6. Or simpler: accumulate 6 times.
+        ; For pattern_number up to 85 (max unique patterns per Deater),
+        ; 85*6 = 510 = $1FE, fits in 16-bit. Use shift/add: X*6 = X*4 + X*2.
+        ; First X*2:
+        asl     dec_pat_mul_lo
+        rol     dec_pat_mul_hi
+        ; Save X*2 in temp
+        lda     dec_pat_mul_lo
+        sta     dec_pat_x2_lo
+        lda     dec_pat_mul_hi
+        sta     dec_pat_x2_hi
+        ; X*4 = (X*2)*2:
+        asl     dec_pat_mul_lo
+        rol     dec_pat_mul_hi
+        ; X*6 = X*4 + X*2:
+        clc
+        lda     dec_pat_mul_lo
+        adc     dec_pat_x2_lo
+        sta     dec_pat_mul_lo
+        lda     dec_pat_mul_hi
+        adc     dec_pat_x2_hi
+        sta     dec_pat_mul_hi
+
+        ; Now pat_entry_addr = pt3_patterns_ptr + pattern_number * 6
+        ; Store into M5_PTR_LO/HI as scratch (reused from M5a; safe).
+        clc
+        lda     pt3_patterns_ptr_lo
+        adc     dec_pat_mul_lo
+        sta     M5_PTR_LO
+        lda     pt3_patterns_ptr_hi
+        adc     dec_pat_mul_hi
+        sta     M5_PTR_HI
+
+        ; Read 6 bytes: ch_A_lo, ch_A_hi, ch_B_lo, ch_B_hi, ch_C_lo, ch_C_hi.
+        ; Each is FILE-RELATIVE; convert to absolute with full 16-bit add of pt3_base.
+
+        ; Channel A:
+        ldy     #0
+        clc
+        lda     (M5_PTR_LO),y           ; ch_A_lo (file-relative)
+        adc     pt3_base_lo
+        sta     ZP_STREAM_A_LO
+        iny
+        lda     (M5_PTR_LO),y           ; ch_A_hi (file-relative)
+        adc     pt3_base_hi
+        sta     ZP_STREAM_A_HI
+
+        ; Channel B:
+        iny
+        clc
+        lda     (M5_PTR_LO),y           ; ch_B_lo
+        adc     pt3_base_lo
+        sta     ZP_STREAM_B_LO
+        iny
+        lda     (M5_PTR_LO),y           ; ch_B_hi
+        adc     pt3_base_hi
+        sta     ZP_STREAM_B_HI
+
+        ; Channel C:
+        iny
+        clc
+        lda     (M5_PTR_LO),y           ; ch_C_lo
+        adc     pt3_base_lo
+        sta     ZP_STREAM_C_LO
+        iny
+        lda     (M5_PTR_LO),y           ; ch_C_hi
+        adc     pt3_base_hi
+        sta     ZP_STREAM_C_HI
+
+        ; Reset per-channel state for all 3 channels.
+        lda     #1
+        sta     ch_nn_skip_a
+        sta     ch_nn_skip_b
+        sta     ch_nn_skip_c
+        sta     ch_skip_counter_a
+        sta     ch_skip_counter_b
+        sta     ch_skip_counter_c
+        lda     #0
+        sta     ch_end_flag_a
+        sta     ch_end_flag_b
+        sta     ch_end_flag_c
+        rts
+
+; =============================================================================
+; player_decode_row_all()
+; =============================================================================
+; Decode one row tick across all 3 channels.
+;
+; For each channel:
+;   1. If ch_end_flag_<ch> set: fill row_out with sentinels, continue.
+;   2. Decrement ch_skip_counter_<ch>.
+;   3. If skip_counter > 0: fill row_out with sentinels (skipped row), continue.
+;   4. Else: call player_decode_row(<ch>).
+;      - If A=1 on return: set ch_end_flag_<ch>, fill row_out with sentinels.
+;      - If A=0: decode succeeded. Reset ch_skip_counter = ch_nn_skip.
+;
+; Returns A = number of active channels (not in end_of_pattern state).
+; When A=0, pattern is fully exhausted — pattern engine should advance.
+;
+; Clobbers A, X, Y.
+; -----------------------------------------------------------------------------
+player_decode_row_all:
+        lda     #0
+        sta     dec_active_count
+
+        ; --- Channel A ---
+        lda     ch_end_flag_a
+        beq     @a_live
+        ; Ended: fill sentinels and skip
+        ldx     #0
+        jsr     fill_sentinels_ch
+        jmp     @after_a
+@a_live:
+        dec     ch_skip_counter_a
+        beq     @a_decode
+        ; Skip counter > 0: this tick is a skip row.
+        ldx     #0
+        jsr     fill_sentinels_ch
+        inc     dec_active_count        ; active but skipping still counts as active
+        jmp     @after_a
+@a_decode:
+        lda     #0
+        jsr     player_decode_row       ; returns A=0 ok, A=1 end_of_pattern
+        cmp     #1
+        beq     @a_eop
+        ; decoded OK: reset skip_counter
+        lda     ch_nn_skip_a
+        sta     ch_skip_counter_a
+        inc     dec_active_count
+        jmp     @after_a
+@a_eop:
+        lda     #1
+        sta     ch_end_flag_a
+        ldx     #0
+        jsr     fill_sentinels_ch
+@after_a:
+
+        ; --- Channel B ---
+        lda     ch_end_flag_b
+        beq     @b_live
+        ldx     #1
+        jsr     fill_sentinels_ch
+        jmp     @after_b
+@b_live:
+        dec     ch_skip_counter_b
+        beq     @b_decode
+        ldx     #1
+        jsr     fill_sentinels_ch
+        inc     dec_active_count
+        jmp     @after_b
+@b_decode:
+        lda     #1
+        jsr     player_decode_row
+        cmp     #1
+        beq     @b_eop
+        lda     ch_nn_skip_b
+        sta     ch_skip_counter_b
+        inc     dec_active_count
+        jmp     @after_b
+@b_eop:
+        lda     #1
+        sta     ch_end_flag_b
+        ldx     #1
+        jsr     fill_sentinels_ch
+@after_b:
+
+        ; --- Channel C ---
+        lda     ch_end_flag_c
+        beq     @c_live
+        ldx     #2
+        jsr     fill_sentinels_ch
+        jmp     @after_c
+@c_live:
+        dec     ch_skip_counter_c
+        beq     @c_decode
+        ldx     #2
+        jsr     fill_sentinels_ch
+        inc     dec_active_count
+        jmp     @after_c
+@c_decode:
+        lda     #2
+        jsr     player_decode_row
+        cmp     #1
+        beq     @c_eop
+        lda     ch_nn_skip_c
+        sta     ch_skip_counter_c
+        inc     dec_active_count
+        jmp     @after_c
+@c_eop:
+        lda     #1
+        sta     ch_end_flag_c
+        ldx     #2
+        jsr     fill_sentinels_ch
+@after_c:
+
+        lda     dec_active_count
+        rts
+
+; -----------------------------------------------------------------------------
+; fill_sentinels_ch(X = channel_idx)
+; Fill row_out_ch_<X> with sentinels ($FF/0) for a skipped or ended row.
+; Clobbers A, Y. Preserves X.
+; -----------------------------------------------------------------------------
+fill_sentinels_ch:
+        ; Select row_out address by channel.
+        cpx     #0
+        bne     @fs_not_a
+        lda     #<row_out_ch_a
+        sta     M5_OUT_LO
+        lda     #>row_out_ch_a
+        sta     M5_OUT_HI
+        jmp     @fs_do
+@fs_not_a:
+        cpx     #1
+        bne     @fs_c
+        lda     #<row_out_ch_b
+        sta     M5_OUT_LO
+        lda     #>row_out_ch_b
+        sta     M5_OUT_HI
+        jmp     @fs_do
+@fs_c:
+        lda     #<row_out_ch_c
+        sta     M5_OUT_LO
+        lda     #>row_out_ch_c
+        sta     M5_OUT_HI
+@fs_do:
+        ; 12 bytes: $FF at 0,1,2,3,5,6,7,8 and 0 at 4,9,10,11
+        ldy     #0
+        lda     #$FF
+        sta     (M5_OUT_LO),y       ; +0 note
+        iny
+        sta     (M5_OUT_LO),y       ; +1 sample
+        iny
+        sta     (M5_OUT_LO),y       ; +2 env_type
+        iny
+        sta     (M5_OUT_LO),y       ; +3 ornament
+        iny
+        lda     #0
+        sta     (M5_OUT_LO),y       ; +4 orn_expl_zero
+        iny
+        lda     #$FF
+        sta     (M5_OUT_LO),y       ; +5 volume
+        iny
+        sta     (M5_OUT_LO),y       ; +6 env_period_lo
+        iny
+        sta     (M5_OUT_LO),y       ; +7 env_period_hi
+        iny
+        sta     (M5_OUT_LO),y       ; +8 noise_period
+        iny
+        lda     #0
+        sta     (M5_OUT_LO),y       ; +9 spec_cmd
+        iny
+        sta     (M5_OUT_LO),y       ; +10 spec_param0
+        iny
+        sta     (M5_OUT_LO),y       ; +11 spec_param1
+        rts
+
+; =============================================================================
 ; RODATA
 ; =============================================================================
 
@@ -1373,6 +1659,16 @@ dec_pending_count:      .res 1
 dec_spc_cmd_save:       .res 1
 dec_spc_nparam:         .res 1
 
+; M5b driver state
+ch_skip_counter_a:      .res 1
+ch_skip_counter_b:      .res 1
+ch_skip_counter_c:      .res 1
+dec_active_count:       .res 1
+dec_pat_mul_lo:         .res 1
+dec_pat_mul_hi:         .res 1
+dec_pat_x2_lo:          .res 1
+dec_pat_x2_hi:          .res 1
+
 .exportzp note_table_addr_hint := $FF
 .export note_table
 .export volume_table
@@ -1392,3 +1688,5 @@ dec_spc_nparam:         .res 1
 .export row_out_ch_b
 .export row_out_ch_c
 .export ch_nn_skip_a
+.export ch_skip_counter_a
+.export ch_end_flag_a
