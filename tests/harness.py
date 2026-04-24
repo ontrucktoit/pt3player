@@ -622,7 +622,7 @@ PLAYER_INIT_SONG = PLAYER_BASE + 0x2A
 PLAYER_TICK = PLAYER_BASE + 0x2D
 
 
-def test_m6(max_frames=2000):
+def test_m6(max_frames=8000):
     """Run M6 player for N frames per file, diff shadow_ay vs golden ref bit-exact.
     
     For each test file:

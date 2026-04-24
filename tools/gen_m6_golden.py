@@ -19,7 +19,7 @@ from pt3_simulator import PT3Module, simulate
 
 OUT_DIR = 'tests'
 FILES = ['luchibobra.pt3', 'blobbzgame.pt3', 'yerzmyey.pt3']
-NUM_FRAMES = 2000  # ~40 seconds at 50 Hz
+NUM_FRAMES = 8000  # ~40 seconds at 50 Hz
 
 for fname in FILES:
     path = f'tests/pt3/{fname}'

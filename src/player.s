@@ -1709,24 +1709,19 @@ m6_clear_state:
 ; -----------------------------------------------------------------------------
 div_by_3:
         ; Position list values are pattern_num*3; pattern_num is 0..85.
-        ; So A is in {0, 3, 6, ..., 255}. We can use a small lookup, but
-        ; a mul-by-inverse trick works: A * 0x55 / 0x100 ≈ A/3 for small A.
-        ; Simpler: repeated subtraction.
-        tay                             ; save A
-        lda     #0
+        ; A is in {0, 3, 6, ..., 255}. Simple repeated subtraction:
+        ;   while A >= 3: A -= 3; quotient++
+        ; Use X as quotient accumulator (caller must not care about X).
+        ldx     #0
 @sub:
-        cpy     #3
-        bcc     @done
-        tya
-        sbc     #3                      ; C=1 from cpy
-        tay
-        pha
-        txa                             ; preserve X? not needed
-        pla
-        clc
-        adc     #1                      ; accumulate quotient
-        bne     @sub
+        cmp     #3
+        bcc     @done                   ; A < 3 → stop
+        sec
+        sbc     #3
+        inx
+        jmp     @sub
 @done:
+        txa                             ; return quotient in A
         rts
 
 ; -----------------------------------------------------------------------------
@@ -3349,18 +3344,18 @@ ch_amp_slide_c:         .res 1
 
 ; Tone accumulator (16-bit, used when sample byte1 bit6 set)
 ch_ton_accum_a_lo:      .res 1
-ch_ton_accum_a_hi:      .res 1
 ch_ton_accum_b_lo:      .res 1
-ch_ton_accum_b_hi:      .res 1
 ch_ton_accum_c_lo:      .res 1
+ch_ton_accum_a_hi:      .res 1
+ch_ton_accum_b_hi:      .res 1
 ch_ton_accum_c_hi:      .res 1
 
 ; Current envelope sliding (16-bit signed, per-channel accumulator)
 ch_env_sliding_a_lo:    .res 1
-ch_env_sliding_a_hi:    .res 1
 ch_env_sliding_b_lo:    .res 1
-ch_env_sliding_b_hi:    .res 1
 ch_env_sliding_c_lo:    .res 1
+ch_env_sliding_a_hi:    .res 1
+ch_env_sliding_b_hi:    .res 1
 ch_env_sliding_c_hi:    .res 1
 
 ; Current noise sliding (8-bit signed)
@@ -3376,16 +3371,16 @@ ch_ton_sld_count_a:     .res 1
 ch_ton_sld_count_b:     .res 1
 ch_ton_sld_count_c:     .res 1
 ch_ton_sld_step_a_lo:   .res 1
-ch_ton_sld_step_a_hi:   .res 1
 ch_ton_sld_step_b_lo:   .res 1
-ch_ton_sld_step_b_hi:   .res 1
 ch_ton_sld_step_c_lo:   .res 1
+ch_ton_sld_step_a_hi:   .res 1
+ch_ton_sld_step_b_hi:   .res 1
 ch_ton_sld_step_c_hi:   .res 1
 ch_ton_sld_delta_a_lo:  .res 1
-ch_ton_sld_delta_a_hi:  .res 1
 ch_ton_sld_delta_b_lo:  .res 1
-ch_ton_sld_delta_b_hi:  .res 1
 ch_ton_sld_delta_c_lo:  .res 1
+ch_ton_sld_delta_a_hi:  .res 1
+ch_ton_sld_delta_b_hi:  .res 1
 ch_ton_sld_delta_c_hi:  .res 1
 ch_slide_to_note_a:     .res 1
 ch_slide_to_note_b:     .res 1
@@ -3394,16 +3389,16 @@ ch_ton_sld_type_a:      .res 1  ; 0=gliss, 1=portamento
 ch_ton_sld_type_b:      .res 1
 ch_ton_sld_type_c:      .res 1
 ch_cur_ton_slide_a_lo:  .res 1  ; accumulated tone slide (16-bit signed)
-ch_cur_ton_slide_a_hi:  .res 1
 ch_cur_ton_slide_b_lo:  .res 1
-ch_cur_ton_slide_b_hi:  .res 1
 ch_cur_ton_slide_c_lo:  .res 1
+ch_cur_ton_slide_a_hi:  .res 1
+ch_cur_ton_slide_b_hi:  .res 1
 ch_cur_ton_slide_c_hi:  .res 1
 ch_saved_ton_slide_a_lo: .res 1
-ch_saved_ton_slide_a_hi: .res 1
 ch_saved_ton_slide_b_lo: .res 1
-ch_saved_ton_slide_b_hi: .res 1
 ch_saved_ton_slide_c_lo: .res 1
+ch_saved_ton_slide_a_hi: .res 1
+ch_saved_ton_slide_b_hi: .res 1
 ch_saved_ton_slide_c_hi: .res 1
 
 ; Vibrato state (effect 6)
@@ -3481,6 +3476,12 @@ m6_decoded:             .res 3   ; per-channel decoded flag (used in decode loop
 .export ch_nn_skip_a
 .export ch_skip_counter_a
 .export ch_end_flag_a
+.export ch_end_flag_b
+.export ch_end_flag_c
+.export ch_skip_counter_b
+.export ch_skip_counter_c
+.export ch_nn_skip_b
+.export ch_nn_skip_c
 .export shadow_ay
 .export pb_position_idx
 .export pb_current_line
@@ -3514,4 +3515,46 @@ m6_decoded:             .res 3   ; per-channel decoded flag (used in decode loop
 .export ch_ton_accum_a_hi
 .export ch_cur_ton_slide_a_lo
 .export ch_cur_ton_slide_a_hi
+.export ch_amp_slide_b
+.export ch_amp_slide_c
+.export ch_ornament_num_b
+.export ch_ornament_num_c
+.export ch_pos_in_ornament_b
+.export ch_pos_in_ornament_c
+.export ch_ton_accum_b_lo
+.export ch_ton_accum_b_hi
+.export ch_ton_accum_c_lo
+.export ch_ton_accum_c_hi
+.export ch_cur_ton_slide_b_lo
+.export ch_cur_ton_slide_b_hi
+.export ch_cur_ton_slide_c_lo
+.export ch_cur_ton_slide_c_hi
+.export ch_env_sliding_a_lo
+.export ch_env_sliding_a_hi
+.export ch_env_sliding_b_lo
+.export ch_env_sliding_b_hi
+.export ch_env_sliding_c_lo
+.export ch_env_sliding_c_hi
+.export ch_noise_sliding_a
+.export ch_noise_sliding_b
+.export ch_noise_sliding_c
+.export pb_noise_period
+.export pb_add_to_noise
+.export pb_sam_noise
+.export pb_sam_env_p
+.export pb_env_period_lo
+.export pb_env_period_hi
+.export pb_env_shape
+.export pb_current_pat_len
+.export pb_cur_env_slide_lo
+.export pb_cur_env_slide_hi
+.export pb_cur_env_delay
+.export pb_env_delay
+.export m6_tmp_tone_lo
+.export m6_tmp_tone_hi
+.export m6_tmp_note
+.export m6_tmp_amp
+.export m6_tmp_sample_ptr_lo
+.export m6_tmp_sample_ptr_hi
+.export m6_tmp_ch_idx
 .export note_table
