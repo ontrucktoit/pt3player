@@ -49,6 +49,7 @@ PLAYER_IS_PLAYING   = PLAYER_BASE + $0F   ; Returns A=0 (stopped) or A=1 (playin
 PLAYER_IS_SONG_ENDED = PLAYER_BASE + $12  ; Returns A=1 if wrapped this tick
 PLAYER_SET_FLAGS    = PLAYER_BASE + $15   ; A=flag bits (bit0=loop_track, bit1=loop_playlist)
 PLAYER_BUILD_NOTE_TABLE = PLAYER_BASE + $18
+PLAYER_BUILD_VOLUME_TABLE = PLAYER_BASE + $1B
 
 ; -----------------------------------------------------------------------------
 ; Zero page allocation ($D8-$E8, 17 bytes safe per SVS Ultimate Map v2.2)

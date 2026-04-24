@@ -1,12 +1,12 @@
 ; =============================================================================
-; player.s - PT3 Player M2 "Note Table Generator"
+; player.s - PT3 Player M2+M3: Note Table + Volume Table Generators
 ; =============================================================================
 
         .include "pt3_player.inc"
 
         .segment "CODE"
 
-; Jump table at $3000 (9 entries × 3 bytes)
+; Jump table at $3000 (10 entries × 3 bytes)
 jump_table:
         jmp player_init                  ; $3000
         jmp player_load_pt3              ; $3003
@@ -16,7 +16,8 @@ jump_table:
         jmp player_is_playing            ; $300F
         jmp player_is_song_ended         ; $3012
         jmp player_set_flags             ; $3015
-        jmp player_build_note_table      ; $3018 — NEW in M2
+        jmp player_build_note_table      ; $3018 — M2
+        jmp player_build_volume_table    ; $301B — M3
 
 ; -----------------------------------------------------------------------------
 player_init:
@@ -109,13 +110,14 @@ player_build_note_table:
 
         jsr     depack_t_pack
 
+        ; NT_SELECTOR lookup: entry index = table*2 + version, offset = idx * 3
         lda     nt_arg_table
         asl     a
-        ora     nt_arg_version
+        ora     nt_arg_version           ; A = entry idx 0..7
         sta     nt_sel_tmp
-        asl     a
+        asl     a                         ; *2
         clc
-        adc     nt_sel_tmp
+        adc     nt_sel_tmp                ; +*1 = *3
         tay
 
         lda     NT_SELECTOR_RAW,y
@@ -135,6 +137,7 @@ player_build_note_table:
 
         jsr     generate_notes
 
+        ; Special case: if raw_byte == 1 (table 1), set note_table[46] = 0xFD
         lda     nt_raw_byte
         cmp     #1
         bne     @no_special
@@ -145,6 +148,9 @@ player_build_note_table:
         jsr     apply_corrections
         rts
 
+; -----------------------------------------------------------------------------
+; depack_t_pack — fills t1_buf (98 bytes) from T_PACK_DATA, writing REVERSED
+; -----------------------------------------------------------------------------
 depack_t_pack:
         ldx     #97
         lda     #0
@@ -159,6 +165,7 @@ depack_t_pack:
 
         ldy     #0
 
+        ; write_idx starts at 96 (last word low byte); decrements by 2
         lda     #96
         sta     dp_write_idx
 
@@ -172,10 +179,11 @@ depack_t_pack:
         cmp     #30
         bcc     @abs
 
-        asl     a
+        ; Delta record: hl += 2*a
+        asl     a                         ; A = 2*a, C = hi bit
         pha
         lda     #0
-        adc     #0
+        adc     #0                        ; capture carry
         sta     dp_temp
         pla
         clc
@@ -219,11 +227,15 @@ depack_t_pack:
 @done:
         rts
 
+; -----------------------------------------------------------------------------
+; generate_notes — fill note_table[192] from t1_buf base values
+; -----------------------------------------------------------------------------
 generate_notes:
         lda     #0
         sta     gn_note_i
 
 @note_loop:
+        ; Fetch base value
         lda     gn_note_i
         asl     a
         clc
@@ -239,13 +251,16 @@ generate_notes:
         sta     gn_octave
 
 @octave_loop:
+        ; bc >>= 1 (shift_carry goes to C)
         lsr     gn_bc_hi
         ror     gn_bc_lo
 
+        ; If truncate, clear carry
         lda     nt_truncate
         beq     @no_trunc
         clc
 @no_trunc:
+        ; Add carry to bc_lo, propagate
         lda     gn_bc_lo
         adc     #0
         sta     gn_tmp_lo
@@ -253,17 +268,18 @@ generate_notes:
         adc     #0
         sta     gn_tmp_hi
 
+        ; Compute dest byte offset = note_i*2 + octave*24
         lda     gn_octave
-        asl     a
-        asl     a
-        asl     a
-        sta     gn_dest_tmp
-        asl     a
+        asl     a                         ; *2
+        asl     a                         ; *4
+        asl     a                         ; *8
+        sta     gn_dest_tmp               ; oct*8
+        asl     a                         ; *16
         clc
-        adc     gn_dest_tmp
+        adc     gn_dest_tmp               ; +*8 = *24
         sta     gn_dest_tmp
         lda     gn_note_i
-        asl     a
+        asl     a                         ; *2
         clc
         adc     gn_dest_tmp
         tax
@@ -286,7 +302,11 @@ generate_notes:
 
         rts
 
+; -----------------------------------------------------------------------------
+; apply_corrections — walks (nt_corr_ptr), stops at 0.
+; -----------------------------------------------------------------------------
 apply_corrections:
+        ; Copy corr pointer to zero page (6502 needs ZP for (indirect),Y)
         lda     nt_corr_ptr_lo
         sta     ZP_TEMP_LO
         lda     nt_corr_ptr_hi
@@ -298,13 +318,14 @@ apply_corrections:
         beq     @done
 
         pha
-        lsr     a
-        asl     a
+        lsr     a                         ; A = word_idx (= byte offset)
+        asl     a                         ; *2 = byte offset in note_table
         tax
         pla
         and     #1
         beq     @add
 
+        ; sign=1 → decrement low byte
         lda     note_table,x
         sec
         sbc     #1
@@ -320,6 +341,227 @@ apply_corrections:
         bne     @loop
 @done:
         rts
+
+; =============================================================================
+; player_build_volume_table(A = pt_version)
+; =============================================================================
+; Port of pt3_tables.build_volume_table (Ivan Roshin's VolTableCreator).
+;
+; pt_version < 5  -> OLD variant (PT 3.xx..3.4x)
+;                    Initial: HL=$0010, DE=$0010, use_rla=0
+; pt_version >= 5 -> NEW variant (PT 3.5+..VTII1.0)
+;                    Initial: HL=$0011, DE=$0000, use_rla=1
+;
+; Algorithm (nested loop, 16 × 16 = 256 iterations):
+;   vt[0..15] = 0 (first 16 entries always zero)
+;   write_idx = 16, C = 0x10, carry = 0
+;   do {
+;     save_HL = HL
+;     HL = HL + DE; carry = overflow
+;     swap HL <-> DE
+;     HL = -carry & 0xFFFF  (SBC HL,HL trick)
+;     do {
+;       A = L
+;       if use_rla: A = (A<<1) | carry; carry = old_bit_7
+;       A = H  (A loaded, carry preserved)
+;       A = A + carry; carry = overflow
+;       vt[write_idx] = A; write_idx++
+;       HL = HL + DE; carry = overflow
+;       C = (C+1) & 0xFF
+;     } while (C & 0x0F) != 0
+;     HL = save_HL
+;     if E == 0x77: E = E + 1
+;   } while C != 0
+; -----------------------------------------------------------------------------
+player_build_volume_table:
+        ; Store pt_version, decide variant
+        cmp     #5
+        bcs     @new_variant
+
+        ; OLD variant: H=0, L=$10, D=0, E=$10, use_rla=0
+        lda     #$00
+        sta     vt_H
+        sta     vt_D
+        sta     vt_use_rla
+        lda     #$10
+        sta     vt_L
+        sta     vt_E
+        jmp     @start
+
+@new_variant:
+        ; NEW variant: H=0, L=$11, D=0, E=$00, use_rla=1
+        lda     #$00
+        sta     vt_H
+        sta     vt_D
+        sta     vt_E
+        lda     #$11
+        sta     vt_L
+        lda     #1
+        sta     vt_use_rla
+
+@start:
+        ; Zero first 16 entries of volume_table (rest gets overwritten)
+        ldx     #15
+        lda     #0
+@clear_vt:
+        sta     volume_table,x
+        dex
+        bpl     @clear_vt
+
+        ; write_idx = 16, C = $10, carry = 0
+        lda     #16
+        sta     vt_write_idx
+        lda     #$10
+        sta     vt_C
+        lda     #0
+        sta     vt_carry
+
+; ---------- Outer loop INITV2 ----------
+@outer:
+        ; save_HL = HL
+        lda     vt_H
+        sta     vt_saveH
+        lda     vt_L
+        sta     vt_saveL
+
+        ; HL = HL + DE, carry = overflow
+        clc
+        lda     vt_L
+        adc     vt_E
+        sta     vt_L
+        lda     vt_H
+        adc     vt_D
+        sta     vt_H
+        lda     #0
+        adc     #0                       ; capture carry out
+        sta     vt_carry
+
+        ; Swap HL <-> DE
+        lda     vt_H
+        ldx     vt_D
+        sta     vt_D
+        stx     vt_H
+        lda     vt_L
+        ldx     vt_E
+        sta     vt_E
+        stx     vt_L
+
+        ; HL = -carry (i.e. 0x0000 if carry=0, 0xFFFF if carry=1)
+        ; SBC HL,HL trick: HL = HL - HL - carry
+        ; When C=0: 0-0-0 = 0
+        ; When C=1: 0-0-1 = -1 = 0xFFFF
+        lda     vt_carry
+        beq     @hl_zero
+        lda     #$FF
+        sta     vt_H
+        sta     vt_L
+        jmp     @inner
+@hl_zero:
+        lda     #0
+        sta     vt_H
+        sta     vt_L
+
+; ---------- Inner loop INITV1 ----------
+@inner:
+        ; A = L
+        lda     vt_L
+
+        ; If use_rla: A = (A << 1) | carry; carry = old bit 7
+        ldx     vt_use_rla
+        beq     @skip_rla
+
+        ; old bit 7 of A -> new carry
+        ; Use ASL to shift A and capture carry
+        asl     a                        ; A = A << 1, carry = old bit 7
+        ; Carry flag now has old bit 7. We need to OR in old vt_carry as bit 0
+        ; but ASL already cleared bit 0 to 0.
+        ; Bring vt_carry into bit 0 without disturbing C:
+        pha                              ; save A (post-shift, without OR)
+        lda     vt_carry                 ; 0 or 1
+        tax                              ; X has old vt_carry
+        lda     #0
+        rol     a                        ; A = old hardware carry (bit 7 before ASL)
+        sta     vt_carry                 ; save new carry
+        pla                              ; restore A (post-shift)
+        ; Now add X (which is 0 or 1) to A
+        stx     vt_tmp
+        ora     vt_tmp                   ; bit 0 = old vt_carry (safe because ASL cleared bit 0)
+        ; Note: A is used only for carry extraction in Z80 — the "LD A,H" next
+        ; overwrites it. So we don't need to preserve A's value.
+@skip_rla:
+
+        ; A = H (overwrites A, carry flag is CPU carry — but we need vt_carry)
+        lda     vt_H
+
+        ; A = A + 0 + vt_carry
+        clc
+        ldx     vt_carry
+        beq     @no_carry_in
+        sec
+@no_carry_in:
+        adc     #0                       ; A = A + carry
+        ; New carry after add is in hardware C flag; capture
+        pha
+        lda     #0
+        adc     #0                       ; captures carry out
+        sta     vt_carry
+        pla
+
+        ; volume_table[write_idx] = A
+        ldx     vt_write_idx
+        sta     volume_table,x
+
+        ; write_idx++
+        inc     vt_write_idx
+
+        ; HL = HL + DE, carry = overflow
+        clc
+        lda     vt_L
+        adc     vt_E
+        sta     vt_L
+        lda     vt_H
+        adc     vt_D
+        sta     vt_H
+        lda     #0
+        adc     #0
+        sta     vt_carry
+
+        ; C = (C + 1) & 0xFF
+        inc     vt_C
+        ; Test: (C & 0x0F) == 0 ?
+        lda     vt_C
+        and     #$0F
+        bne     @inner
+
+; ---------- End of inner ----------
+
+        ; Restore HL
+        lda     vt_saveH
+        sta     vt_H
+        lda     vt_saveL
+        sta     vt_L
+
+        ; If E == $77: E = E + 1
+        lda     vt_E
+        cmp     #$77
+        bne     @skip_einc
+        clc
+        adc     #1
+        sta     vt_E
+@skip_einc:
+
+        ; Test C == 0 ?
+        lda     vt_C
+        beq     @done
+        jmp     @outer
+@done:
+
+        ; Done
+        rts
+
+; =============================================================================
+; RODATA
+; =============================================================================
 
         .segment "RODATA"
 
@@ -348,28 +590,35 @@ TCNEW_0_LIST:
         .byte   $1D, $21, $23, $27, $2B, $2D, $31, $55, $BD, $BF, 0
 TCNEW_2_LIST:
         .byte   $1B, $21, $25, $29, $2B, $3B, $4D, $5F, $BB, $BD, $BF, 0
+; TCNEW_3 chains immediately into TCOLD_3 (no terminator)
 TCNEW_3_CHAIN:
         .byte   $57
+; Must be contiguous with TCNEW_3_CHAIN
 TCOLD_3_CHAINED:
         .byte   $1F, $23, $25, $29, $2D, $2F, $33, $BF, 0
 
+; NT_SELECTOR: 8 entries × 3 bytes
 NT_SELECTOR_RAW:
-        .byte   100
+        .byte   100                       ; table=0 NEW: raw=100
         .word   TCNEW_0_LIST
-        .byte   101
+        .byte   101                       ; table=0 OLD: raw=101
         .word   TCOLD_0_LIST
-        .byte   1
+        .byte   1                         ; table=1 NEW: raw=1
         .word   TCOLD_1_LIST
-        .byte   1
+        .byte   1                         ; table=1 OLD: raw=1
         .word   TCOLD_1_LIST
-        .byte   148
+        .byte   148                       ; table=2 NEW: raw=148
         .word   TCNEW_2_LIST
-        .byte   48
+        .byte   48                        ; table=2 OLD: raw=48
         .word   TCOLD_2_LIST
-        .byte   96
+        .byte   96                        ; table=3 NEW: raw=96, chain TCNEW_3
         .word   TCNEW_3_CHAIN
-        .byte   96
+        .byte   96                        ; table=3 OLD: raw=96
         .word   TCOLD_3_LIST
+
+; =============================================================================
+; BSS
+; =============================================================================
 
         .segment "BSS"
 
@@ -377,6 +626,7 @@ shadow_ay:              .res 14
 playing_flag:           .res 1
 flags_byte:             .res 1
 
+; Note table generator scratch
 nt_arg_table:           .res 1
 nt_arg_version:         .res 1
 nt_raw_byte:            .res 1
@@ -402,5 +652,21 @@ gn_dest_tmp:            .res 1
 t1_buf:                 .res 98
 note_table:             .res 192
 
+; Volume table generator state
+vt_H:                   .res 1
+vt_L:                   .res 1
+vt_D:                   .res 1
+vt_E:                   .res 1
+vt_saveH:               .res 1
+vt_saveL:               .res 1
+vt_use_rla:             .res 1
+vt_carry:               .res 1
+vt_write_idx:           .res 1
+vt_C:                   .res 1
+vt_tmp:                 .res 1
+
+volume_table:           .res 256
+
 .exportzp note_table_addr_hint := $FF
 .export note_table
+.export volume_table

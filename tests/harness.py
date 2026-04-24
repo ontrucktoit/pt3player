@@ -4,6 +4,7 @@ PT3 Player harness — py65 validation.
 
 M1: hello-tone constant AY output
 M2: note table generator vs Python reference (8 combinations)
+M3: volume table generator vs Python reference (2 variants)
 """
 
 import os
@@ -101,13 +102,16 @@ def build_sim():
     return mpu, obs
 
 
+# -----------------------------------------------------------------------------
+# M1 test — unchanged
+# -----------------------------------------------------------------------------
 M1_EXPECTED = (0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
                0x3E, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00)
 
 
 def test_m1():
     print("=" * 70)
-    print("M1 - Hello Tone")
+    print("M1 — Hello Tone")
     print("=" * 70)
     assemble_player()
     mpu, obs = build_sim()
@@ -129,12 +133,16 @@ def test_m1():
     return 0 if (ok_id and ok_exp) else 1
 
 
+# -----------------------------------------------------------------------------
+# M2 test — note table generator for all 8 (table, version) combinations
+# -----------------------------------------------------------------------------
 def test_m2():
     print("=" * 70)
-    print("M2 - Note Table Generator")
+    print("M2 — Note Table Generator")
     print("=" * 70)
     assemble_player()
 
+    # Find note_table address in binary layout
     note_table_addr = find_symbol("note_table")
     print(f"  note_table located at ${note_table_addr:04X}")
 
@@ -146,14 +154,18 @@ def test_m2():
             mpu, obs = build_sim()
             load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
 
+            # Call player_init to zero BSS
             call_sub(mpu, PLAYER_INIT)
 
+            # Call player_build_note_table(A=table_idx, X=version)
             mpu.a = table_idx
             mpu.x = version
             c = call_sub(mpu, PLAYER_BUILD_NOTE_TABLE)
 
+            # Read 192 bytes from note_table
             our = bytes([mpu.memory[note_table_addr + i] for i in range(192)])
 
+            # Compare with Python reference
             ref_path = TESTS_DIR / f"nt_ref_t{table_idx}_v{version}.bin"
             ref = ref_path.read_bytes()
 
@@ -162,6 +174,7 @@ def test_m2():
                       f"PASS ({c} steps)")
                 total_passed += 1
             else:
+                # Find first diff
                 for i in range(192):
                     if our[i] != ref[i]:
                         word_idx = i // 2
@@ -169,6 +182,7 @@ def test_m2():
                         note = word_idx % 12
                         print(f"  table={table_idx} version={'OLD' if version else 'NEW'}: "
                               f"FAIL at byte {i} (note {note}, octave {octave+1})")
+                        # Dump 8 bytes around
                         lo = max(0, i - 3)
                         hi = min(192, i + 5)
                         print(f"    our: {' '.join(f'{b:02X}' for b in our[lo:hi])}")
@@ -181,16 +195,78 @@ def test_m2():
     return 0 if total_failed == 0 else 1
 
 
+# -----------------------------------------------------------------------------
+# M3 test — volume table generator for both variants (OLD pt<5, NEW pt>=5)
+# -----------------------------------------------------------------------------
+PLAYER_BUILD_VOLUME_TABLE = PLAYER_BASE + 0x1B
+
+
+def test_m3():
+    print("=" * 70)
+    print("M3 - Volume Table Generator")
+    print("=" * 70)
+    assemble_player()
+
+    volume_table_addr = find_symbol("volume_table")
+    print(f"  volume_table located at ${volume_table_addr:04X}")
+
+    total_passed = 0
+    total_failed = 0
+
+    # (pt_version, variant_name)
+    cases = [(4, "old"), (7, "new")]
+
+    for pt_version, variant in cases:
+        mpu, obs = build_sim()
+        load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
+
+        call_sub(mpu, PLAYER_INIT)
+
+        # player_build_volume_table(A = pt_version)
+        mpu.a = pt_version
+        c = call_sub(mpu, PLAYER_BUILD_VOLUME_TABLE)
+
+        our = bytes([mpu.memory[volume_table_addr + i] for i in range(256)])
+
+        ref_path = TESTS_DIR / f"vt_ref_{variant}.bin"
+        ref = ref_path.read_bytes()
+
+        if our == ref:
+            print(f"  pt_version={pt_version} ({variant}): PASS ({c} steps)")
+            total_passed += 1
+        else:
+            # Find first diff
+            for i in range(256):
+                if our[i] != ref[i]:
+                    cv = i >> 4
+                    sv = i & 0x0F
+                    print(f"  pt_version={pt_version} ({variant}): FAIL at idx {i} "
+                          f"(ch_vol={cv:X} sample_vol={sv:X})")
+                    lo = max(0, i - 3)
+                    hi = min(256, i + 5)
+                    print(f"    our: {' '.join(f'{b:02X}' for b in our[lo:hi])}")
+                    print(f"    ref: {' '.join(f'{b:02X}' for b in ref[lo:hi])}")
+                    break
+            total_failed += 1
+
+    print()
+    print(f"  Result: {total_passed}/{total_passed + total_failed} variants passed")
+    return 0 if total_failed == 0 else 1
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
     if cmd == "m1":
         sys.exit(test_m1())
     elif cmd == "m2":
         sys.exit(test_m2())
+    elif cmd == "m3":
+        sys.exit(test_m3())
     elif cmd == "all":
         r1 = test_m1()
         r2 = test_m2()
-        sys.exit(r1 | r2)
+        r3 = test_m3()
+        sys.exit(r1 | r2 | r3)
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
