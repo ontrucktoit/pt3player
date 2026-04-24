@@ -50,6 +50,7 @@ PLAYER_IS_SONG_ENDED = PLAYER_BASE + $12  ; Returns A=1 if wrapped this tick
 PLAYER_SET_FLAGS    = PLAYER_BASE + $15   ; A=flag bits (bit0=loop_track, bit1=loop_playlist)
 PLAYER_BUILD_NOTE_TABLE = PLAYER_BASE + $18
 PLAYER_BUILD_VOLUME_TABLE = PLAYER_BASE + $1B
+PLAYER_DECODE_ROW   = PLAYER_BASE + $1E
 
 ; -----------------------------------------------------------------------------
 ; Zero page allocation ($D8-$E8, 17 bytes safe per SVS Ultimate Map v2.2)
@@ -70,6 +71,14 @@ ZP_TEMP2_LO         = $E4
 ZP_TEMP2_HI         = $E5
 ZP_SCRATCH1         = $E6
 ZP_SCRATCH2         = $E7
+; M5a decoder uses these ZP aliases (same physical location as ZP_TEMP*)
+; These are shared with apply_corrections (M2), which runs during player_init
+; and player_build_note_table — never concurrent with pattern decoder.
+M5_PTR_LO           = ZP_TEMP_LO      ; working copy of stream pointer
+M5_PTR_HI           = ZP_TEMP_HI
+M5_OUT_LO           = ZP_TEMP2_LO     ; pointer to row_out_ch<current>
+M5_OUT_HI           = ZP_TEMP2_HI
+
 ZP_SCRATCH3         = $E8
 
 ; -----------------------------------------------------------------------------

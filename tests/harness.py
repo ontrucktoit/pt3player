@@ -362,6 +362,150 @@ def test_m4():
     return 0 if total_failed == 0 else 1
 
 
+# -----------------------------------------------------------------------------
+# M5a test — single-channel pattern row decoder
+# -----------------------------------------------------------------------------
+PLAYER_DECODE_ROW = PLAYER_BASE + 0x1E
+ZP_STREAM_A_LO = 0xD8
+ZP_STREAM_A_HI = 0xD9
+ZP_STREAM_B_LO = 0xDA
+ZP_STREAM_B_HI = 0xDB
+ZP_STREAM_C_LO = 0xDC
+ZP_STREAM_C_HI = 0xDD
+
+ROW_FIELD_NAMES = [
+    'note', 'sample', 'env_type', 'ornament', 'orn_expl_zero', 'volume',
+    'env_period_lo', 'env_period_hi', 'noise_period',
+    'spec_cmd', 'spec_param0', 'spec_param1'
+]
+
+
+def test_m5a():
+    print("=" * 70)
+    print("M5a - Pattern Row Decoder (single channel)")
+    print("=" * 70)
+    assemble_player()
+
+    syms = {name: find_symbol(name) for name in [
+        "pt3_base_lo", "pt3_patterns_ptr_lo",
+        "row_out_ch_a", "row_out_ch_b", "row_out_ch_c",
+    ]}
+
+    total_rows_pass = 0
+    total_rows_fail = 0
+    files_pass = 0
+    files_fail = 0
+    BASE = 0x8000
+
+    for fname in ['luchibobra.pt3', 'blobbzgame.pt3', 'yerzmyey.pt3']:
+        ref_path = TESTS_DIR / f"m5a_ref_{fname.replace('.pt3','')}.bin"
+        ref_data = ref_path.read_bytes()
+        assert ref_data[:4] == b'M5A\x01', f"Bad magic in {ref_path}"
+        num_seq = ref_data[4] | (ref_data[5] << 8)
+
+        # Load PT3 into py65 memory (shared across all sequences in this file)
+        mpu, obs = build_sim()
+        load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
+        pt3 = (TESTS_DIR / "pt3" / fname).read_bytes()
+        for i, b in enumerate(pt3):
+            mpu.memory[BASE + i] = b
+        call_sub(mpu, PLAYER_INIT)
+        mpu.a = BASE >> 8
+        mpu.x = BASE & 0xFF
+        call_sub(mpu, PLAYER_LOAD_PT3)
+
+        file_rows_pass = 0
+        file_rows_fail = 0
+        first_fail_info = None
+
+        idx = 6  # skip 4-byte magic + 2-byte seq count
+        for seq_i in range(num_seq):
+            pat_num = ref_data[idx]
+            ch_idx = ref_data[idx + 1]
+            start_ptr_rel = ref_data[idx + 2] | (ref_data[idx + 3] << 8)
+            num_rows = ref_data[idx + 4] | (ref_data[idx + 5] << 8)
+            idx += 6
+
+            # Set ZP_STREAM_<ch> to absolute start ptr
+            start_abs = BASE + start_ptr_rel
+            if ch_idx == 0:
+                mpu.memory[ZP_STREAM_A_LO] = start_abs & 0xFF
+                mpu.memory[ZP_STREAM_A_HI] = (start_abs >> 8) & 0xFF
+                out_addr = syms['row_out_ch_a']
+            elif ch_idx == 1:
+                mpu.memory[ZP_STREAM_B_LO] = start_abs & 0xFF
+                mpu.memory[ZP_STREAM_B_HI] = (start_abs >> 8) & 0xFF
+                out_addr = syms['row_out_ch_b']
+            else:
+                mpu.memory[ZP_STREAM_C_LO] = start_abs & 0xFF
+                mpu.memory[ZP_STREAM_C_HI] = (start_abs >> 8) & 0xFF
+                out_addr = syms['row_out_ch_c']
+
+            for row_i in range(num_rows):
+                expected_row = ref_data[idx:idx + 12]
+                expected_end_ptr_rel = ref_data[idx + 12] | (ref_data[idx + 13] << 8)
+                idx += 14
+
+                mpu.a = ch_idx
+                call_sub(mpu, PLAYER_DECODE_ROW)
+                # ret A=0 expected for decoded rows
+                actual_row = bytes([mpu.memory[out_addr + i] for i in range(12)])
+
+                # Check stream ptr
+                if ch_idx == 0:
+                    actual_end_abs = mpu.memory[ZP_STREAM_A_LO] | (mpu.memory[ZP_STREAM_A_HI] << 8)
+                elif ch_idx == 1:
+                    actual_end_abs = mpu.memory[ZP_STREAM_B_LO] | (mpu.memory[ZP_STREAM_B_HI] << 8)
+                else:
+                    actual_end_abs = mpu.memory[ZP_STREAM_C_LO] | (mpu.memory[ZP_STREAM_C_HI] << 8)
+                actual_end_rel = actual_end_abs - BASE
+
+                row_match = (actual_row == expected_row)
+                ptr_match = (actual_end_rel == expected_end_ptr_rel)
+
+                if row_match and ptr_match:
+                    file_rows_pass += 1
+                else:
+                    file_rows_fail += 1
+                    if first_fail_info is None:
+                        # Capture detailed info for reporting
+                        diffs = []
+                        for i in range(12):
+                            if actual_row[i] != expected_row[i]:
+                                diffs.append(
+                                    f"{ROW_FIELD_NAMES[i]}: got ${actual_row[i]:02X} "
+                                    f"exp ${expected_row[i]:02X}"
+                                )
+                        if not ptr_match:
+                            diffs.append(
+                                f"stream_ptr: got ${actual_end_rel:04X} "
+                                f"exp ${expected_end_ptr_rel:04X}"
+                            )
+                        first_fail_info = {
+                            'pat': pat_num, 'ch': ch_idx, 'row': row_i,
+                            'diffs': diffs
+                        }
+
+        if file_rows_fail == 0:
+            print(f"  {fname}: PASS ({file_rows_pass} rows)")
+            files_pass += 1
+        else:
+            print(f"  {fname}: FAIL ({file_rows_pass} passed, {file_rows_fail} failed)")
+            if first_fail_info:
+                info = first_fail_info
+                print(f"    first failure: pat {info['pat']} ch {info['ch']} row {info['row']}")
+                for d in info['diffs']:
+                    print(f"      {d}")
+            files_fail += 1
+        total_rows_pass += file_rows_pass
+        total_rows_fail += file_rows_fail
+
+    print()
+    print(f"  Result: {files_pass}/{files_pass + files_fail} files; "
+          f"{total_rows_pass}/{total_rows_pass + total_rows_fail} rows bit-exact")
+    return 0 if files_fail == 0 else 1
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
     if cmd == "m1":
@@ -372,12 +516,15 @@ if __name__ == "__main__":
         sys.exit(test_m3())
     elif cmd == "m4":
         sys.exit(test_m4())
+    elif cmd == "m5a":
+        sys.exit(test_m5a())
     elif cmd == "all":
         r1 = test_m1()
         r2 = test_m2()
         r3 = test_m3()
         r4 = test_m4()
-        sys.exit(r1 | r2 | r3 | r4)
+        r5 = test_m5a()
+        sys.exit(r1 | r2 | r3 | r4 | r5)
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
