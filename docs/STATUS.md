@@ -211,9 +211,14 @@ back cleanly; the merge commit preserves full branch history in the graph.
   correct by accident, so the bug was subtle and only one pair).
 
 ### PT3 format surprises (vs prior docs / memory)
-- **Position list has NO `0xFF` terminator**. Older docs and memory said there
-  was one. In reality, `num_positions` field at offset `$65` is authoritative.
-  Do NOT scan for `0xFF`. Confirmed against all 3 test files.
+- **Position list has `0xFF` terminator AND `num_positions` count — both are authoritative.**
+  Verified against all 19 test files in corpus: byte at offset `$C9 + num_positions`
+  is `$FF` in every file. Deater's PT3 spec documents the terminator explicitly;
+  Python simulator uses `num_positions` as length and ignores the terminator byte,
+  so both interpretations work on well-formed files. M4 uses `num_positions`.
+  Defensive M5 code may want to validate the terminator is `$FF` as a corruption
+  check. **Earlier sessions (including M4 commit message) incorrectly claimed
+  there was no terminator — that was wrong.**
 - **Position list bytes are `pattern_num × 3`**, stored as `pn*3` (0, 3, 6, ...).
   To get the actual pattern number you either divide by 3 or index directly
   using the byte as an offset into a 3-byte-per-pattern lookup scheme. VTII

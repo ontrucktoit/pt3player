@@ -289,15 +289,22 @@ cycle needed. Steps: yerzmyey.pt3 77, luchibobra.pt3 75, blobbzgame.pt3 74.
 Code size after M4: 1181 bytes (+219 from M3, 28.8% of 4096). player.bin md5:
 `ad5ccbafec9b0fd7a1e0a9e2db2f7675`.
 
-PT3 format correction confirmed vs earlier docs/memory:
-- **Position list has NO `$FF` terminator.** `num_positions` at offset `$65`
-  is authoritative. Verified against all 3 files.
+PT3 format correction — self-correcting a prior mistake:
+- M4 commit message claimed "position list has no `$FF` terminator" based on
+  the observation that Python sim uses `num_positions` as length. **This was
+  wrong.** Deater's PT3 spec documents a `$FF` terminator, and inspection of
+  all 19 test files confirms: byte at `$C9 + num_positions` is always `$FF`.
+  So position list length is DOUBLE-ENCODED: `num_positions` field gives
+  the count, AND a `$FF` byte follows. Both are authoritative; they agree
+  on all well-formed files. M4 uses `num_positions` which works, but the
+  spec claim in the M4 commit message (b2e8ac9) was incorrect.
 - **Position list bytes are `pattern_num × 3`** (0, 3, 6, ...), not raw
   pattern numbers. Consumer divides by 3 (or uses byte directly as
-  offset into 3-byte-per-pattern indexing — deferred to M5).
-- **Patterns table is array of 6-byte entries**, confirmed by Deater's spec
-  cited by Kris. Each entry = 3 × 2-byte LE stream pointers (A, B, C).
-  M5 consumes this.
+  offset into 3-byte-per-pattern indexing — M5 will use as-is since each
+  patterns-table entry is exactly 6 bytes = 2 × 3).
+- **Patterns table is array of 6-byte entries**, confirmed by Deater's PT3
+  spec. Each entry = 3 × 2-byte LE stream pointers (A, B, C). M5 consumes this.
+  Deater: `a_addr = [pat_ptr] + X*6 + 0..1`, similarly B at +2..3, C at +4..5.
 
 ### Workflow improvements this session
 
