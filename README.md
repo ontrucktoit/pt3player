@@ -95,5 +95,3 @@ behavior is documented there with line references to VTII's `trfuncs.pas`.
 
 TBD — likely MIT or similar permissive. The point is for this to be
 reused by anyone writing Plus/4 programs that want high-quality PT3 audio.
-
-<!-- Remote pushed from Claude sandbox via PM Pipeline -->
