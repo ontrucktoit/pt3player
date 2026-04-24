@@ -1607,8 +1607,24 @@ player_init_song:
         beq     @load_ok
         rts                              ; header invalid; caller detects via pt3_parse_error
 @load_ok:
-        ; Build note + volume tables based on header
+        ; Build note table: A = pt3_tone_table, X = version_is_old
+        ; Python L194: version_is_old = 1 if pt_version < 4 else 0.
+        ; pt3_version_char is ASCII '0'..'9' = $30..$39. version_is_old=1 iff char in '0'..'3'.
+        lda     pt3_version_char
+        cmp     #$34                    ; '4'
+        bcs     @nt_new
+        ldx     #1                      ; version_is_old=1 (chars '0'..'3')
+        jmp     @nt_call
+@nt_new:
+        ldx     #0                      ; version_is_old=0 (chars '4'..'9' and others)
+@nt_call:
+        lda     pt3_tone_table
         jsr     player_build_note_table
+
+        ; Build volume table: A = pt_version. Python L204 hardcodes pt_version=7
+        ; (discovered via Foxx-1998 PT3.3 test - VTII uses single new table for all
+        ; versions regardless of source file's PT3 version). Match VTII bit-exact.
+        lda     #7
         jsr     player_build_volume_table
 
         ; Set speed from pt3_delay
