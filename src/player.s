@@ -2399,6 +2399,9 @@ m6_get_sample_tick_ptr:
         ; Add pos_in_sample × 4
         ldx     m6_tmp_ch_idx
         lda     ch_pos_in_sample_a,x
+        ; Zero high byte before rol (otherwise rol carries garbage from previous use)
+        ldy     #0
+        sty     m6_tmp_amp
         asl     a
         rol     m6_tmp_amp                   ; high byte of *4 (overflow goes here)
         asl     a
@@ -3067,11 +3070,12 @@ m6_advance_sample_orn:
         lda     ZP_SAMPLE_BASE_HI
         adc     pt3_base_hi
         sta     ZP_SAMPLE_BASE_HI
-        ; Compare pos_in_sample >= length
-        ldy     #1                             ; length
-        lda     (ZP_SAMPLE_BASE_LO),y
-        cmp     ch_pos_in_sample_a,x
-        bcs     @sample_in_range               ; length > pos: still in range (length BCS pos)
+        ; Wrap if pos_in_sample >= length.
+        ; Compute: A = pos, cmp length. C=0 -> pos<length -> no wrap.
+        lda     ch_pos_in_sample_a,x
+        ldy     #1                             ; length offset
+        cmp     (ZP_SAMPLE_BASE_LO),y
+        bcc     @sample_in_range               ; pos < length: no wrap
         ; Wrap: pos = loop_pos
         ldy     #0
         lda     (ZP_SAMPLE_BASE_LO),y
@@ -3101,10 +3105,10 @@ m6_advance_sample_orn:
         lda     ZP_ORN_BASE_HI
         adc     pt3_base_hi
         sta     ZP_ORN_BASE_HI
-        ldy     #1
-        lda     (ZP_ORN_BASE_LO),y
-        cmp     ch_pos_in_ornament_a,x
-        bcs     @orn_in_range
+        lda     ch_pos_in_ornament_a,x
+        ldy     #1                             ; length offset
+        cmp     (ZP_ORN_BASE_LO),y
+        bcc     @orn_in_range                  ; pos < length: no wrap
         ldy     #0
         lda     (ZP_ORN_BASE_LO),y
         sta     ch_pos_in_ornament_a,x
