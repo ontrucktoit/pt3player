@@ -510,30 +510,104 @@ the `pt3_python_sim/` package (sibling directory). So harness.py is:
 
 ---
 
-## Open questions to resolve before implementation
+## Resolved design decisions (Q1-Q3)
 
-1. **Does Kris's existing main.asm/jukebox want to own the Timer 1 IRQ and
-   call PLAYER_PLAY on each tick, or should the player own Timer 1 itself?**
-   Per config.asm:
-   ```
-   PLAYER_PLAY     = $3003         ; JSR here each frame (IRQ)
-   ```
-   This suggests: host program owns IRQ, calls player_play via JSR. If true,
-   our player_play IS the tick handler and we don't touch TED timer at all.
-   Host program responsibility to fire IRQ at 50/60 Hz.
+### Q1: IRQ ownership — HOST owns the timer. Player is a pure library.
 
-2. **What does player_stop need to do?** Just mute (zero shadow AY, R7=$FF)?
-   Or also reset position to 0? Leaning toward: mute + clear playing flag,
-   leave position intact so player_play resumes. Separate "player_rewind"
-   for full reset. But this is minor — can decide at M1.
+Researched via multiple sources (Lemon64, chipmusic, Digitalerr0r tutorials,
+SIDBlaster, BBC SIDPlayer). Standard practice since 1985 across SID, AY, and
+other chiptune players: music driver exposes an init/play/stop jump table at
+fixed offsets, host program owns the timer IRQ and does `JSR play_addr` each
+frame.
 
-3. **Loop handling when song reaches end**: PT3 header has loop_pos. When we
-   reach position == num_pos, we jump to position = loop_pos and continue.
-   VTII does this automatically. Simple. But: do we want API for "stop
-   playing after last position, don't loop"? Yes — jukebox wants "next
-   track" trigger, not infinite loop. player_is_song_ended() returns
-   true when we'd wrap to loop_pos; jukebox can stop or let us loop
-   by not checking.
+Quote from chipmusic.org forum: "If a coder writes an intro and wants to re-use
+it with different music they can drop a new file in and not have to change
+their calls to the init or play when using a different music player."
+
+Consequences:
+- **Player does NOT touch TED timer registers** ($FF00, $FF01, $FF09, $FF0A).
+- **Player does NOT install IRQ vectors** ($0314/$0315, $FFFE/$FFFF).
+- **Player does NOT read $FF07** (PAL/NTSC detection — that's host's problem).
+- **Host** sets up Timer 1 at 50 or 60 Hz, installs its IRQ handler, and that
+  handler does (pseudocode):
+  ```
+  irq_handler:
+      pha / txa / pha / tya / pha     ; save regs
+      lda $ff09                         ; check timer 1 pending
+      and #$10
+      beq @not_our_irq
+      lda #$10 / sta $ff09              ; ack
+      jsr PLAYER_PLAY_ADDR              ; <-- our library entry point
+  @not_our_irq:
+      pla / tay / pla / tax / pla
+      rti
+  ```
+- **Py65 harness** just calls `JSR player_play` in a loop — no timer simulation
+  needed. This is actually a *significant testing advantage*.
+
+Benefits beyond "it's the convention":
+- **Wymienność**: swap PT3 player for SID/VGM/etc. without changing main.asm.
+- **Pause**: jukebox pauses by simply not JSR'ing player_play each tick.
+- **Platform agnostic**: player will work on C16, Plus/4, LittleSixteen,
+  MEGA65 core — anywhere that can call JSR $3006 at 50/60 Hz.
+- **Testability**: unit tests exercise player_play directly; no need to
+  simulate TED.
+
+### Q2: player_stop semantics
+
+**Decision**: `player_stop` = mute + halt playback, **preserving position**.
+`player_rewind` = full reset (position=0, speed=initial, clear state).
+
+Rationale: UI commonly wants "pause" (= stop + resume_at_position), and
+"next track" (= stop + rewind). These two operations share "stop" but differ
+on reset. Split cleanly.
+
+Semantics:
+- `player_stop`: writes all-zeros to shadow AY + R7=\$FF (mute mixer), sets
+  `playing=0` flag. Further `player_play` calls do nothing until
+  `player_start` or `player_load_pt3` is called.
+- `player_rewind`: resets current_position, current_line, delay_counter,
+  and all per-channel state. Does NOT re-parse header (that's player_load_pt3's
+  job). Does NOT resume playback — user must call `player_start` after.
+
+### Q3: Loop behavior (track loop + playlist loop, mutually constrained)
+
+**Decision**: two independent flags with constraint that `loop_track=1`
+forces `loop_playlist=0` and locks playlist flag as unsettable.
+
+Flags:
+- `loop_track_flag`: if set, playback loops from position 0 after hitting
+  the last position. PT3's built-in loop_pos is ignored in this mode
+  (we loop to 0, not to loop_pos from header).
+- `loop_playlist_flag`: if set, playback stops after last position;
+  host's jukebox UI is responsible for advancing to next track.
+  If cleared, playback hits loop_pos (from PT3 header) and continues
+  infinitely. **This is VTII's default behavior.**
+
+API:
+- `player_set_loop_track(A=0|1)`: set/clear track loop. If A=1, also
+  clear playlist loop flag automatically.
+- `player_set_loop_playlist(A=0|1)`: set/clear playlist loop. Ignored
+  (no-op) if loop_track_flag is set.
+- `player_get_flags()`: returns current flag state for UI display.
+- `player_is_song_ended()`: returns 1 if we just wrapped (either to
+  loop_pos, position 0, or stopped pending UI action).
+
+Semantics at end of song:
+```
+  if current_position advances past num_pos-1:
+      if loop_track_flag:
+          current_position := 0               ; loop to start of THIS track
+      elif loop_playlist_flag:
+          stop playback                        ; jukebox will pick next track
+      else:
+          current_position := loop_pos (from header)  ; VTII default
+      set song_ended flag (consumed by is_song_ended)
+```
+
+UI visualization: nice-to-have, not critical for M1-M11. Jukebox can display
+both flags as icons; locked state of playlist flag (when track=1) is a
+cosmetic matter only.
 
 ---
 
