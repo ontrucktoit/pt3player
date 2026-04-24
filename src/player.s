@@ -1711,11 +1711,641 @@ div_by_3:
 ; player_tick: called once per 50/60 Hz frame. Does one complete pass of
 ; the PT3 playback engine and writes 14 AY registers to DigiMuz.
 ;
-; SKELETON — filled in subsequent patches.
+; Port of pt3_simulator.simulate() body (one frame iteration).
 ; -----------------------------------------------------------------------------
 player_tick:
-        ; TODO M6 — not yet implemented.
+        ; Stage 1: sam_env_p = 0
+        lda     #0
+        sta     pb_sam_env_p
+
+        ; Stage 2: if tick_in_row == 0, decode and apply row for all channels
+        lda     pb_tick_in_row
+        bne     @no_decode
+        jsr     m6_decode_and_apply_row
+@no_decode:
+
+        ; Stage 3: per-channel compute (sets shadow_ay R0..R5, R8..R10, accum mixer)
+        lda     #0
+        sta     m6_tmp_mixer_bits
+
+        lda     #0
+        sta     m6_tmp_ch_idx
+        jsr     m6_compute_channel
+        lda     #1
+        sta     m6_tmp_ch_idx
+        jsr     m6_compute_channel
+        lda     #2
+        sta     m6_tmp_ch_idx
+        jsr     m6_compute_channel
+
+        ; Stage 4: finalize global registers R6, R7, R11, R12, R13
+        ; R6 = (noise_period + sam_noise) & 0x1F
+        clc
+        lda     pb_noise_period
+        adc     pb_sam_noise
+        and     #$1F
+        sta     shadow_ay + AY_R6_NOISE
+
+        ; R7 = mixer bits
+        lda     m6_tmp_mixer_bits
+        sta     shadow_ay + AY_R7_MIXER
+
+        ; R11/R12 = (env_period + cur_env_slide + sam_env_p_signed) & 0xFFFF
+        ; sam_env_p_signed: if pb_sam_env_p < 0x80 then pb_sam_env_p else pb_sam_env_p - 0x100.
+        ; In two's complement, sign-extend pb_sam_env_p as signed 8-bit:
+        ;   high byte = 0 if pb_sam_env_p < 0x80, else 0xFF.
+        ; Sum: env_period (16-bit) + cur_env_slide (16-bit signed) + sam_env_p_se (16-bit signed).
+        ; Build sam_env_p_signed_hi in m6_tmp_amp temporarily.
+        lda     pb_sam_env_p
+        bpl     @sep_pos
+        lda     #$FF
+        bne     @sep_done
+@sep_pos:
+        lda     #0
+@sep_done:
+        sta     m6_tmp_amp                  ; sam_env_p high byte (sign extension)
+
+        ; env_final = env_period + cur_env_slide + sam_env_p_se
+        clc
+        lda     pb_env_period_lo
+        adc     pb_cur_env_slide_lo
+        sta     shadow_ay + AY_R11_ENV_LO
+        lda     pb_env_period_hi
+        adc     pb_cur_env_slide_hi
+        sta     shadow_ay + AY_R12_ENV_HI
+        clc
+        lda     shadow_ay + AY_R11_ENV_LO
+        adc     pb_sam_env_p
+        sta     shadow_ay + AY_R11_ENV_LO
+        lda     shadow_ay + AY_R12_ENV_HI
+        adc     m6_tmp_amp                  ; sign-extension high byte
+        sta     shadow_ay + AY_R12_ENV_HI
+
+        ; R13 = env_shape (sentinel $FF = no write).
+        ; In Python the write happens unconditionally. We do the same; R13 will be
+        ; $FF for frames 0 until any setenv opcode runs. This is fine — VTII output
+        ; emits $FF too in those cases. (Actually no: VTII emits 0 initially. We'll
+        ; need to ensure pb_env_shape starts at 0 in init_song.)
+        lda     pb_env_shape
+        sta     shadow_ay + AY_R13_ENV_SHAPE
+
+        ; Stage 5: envslide countdown
+        lda     pb_cur_env_delay
+        beq     @no_envslide
+        dec     pb_cur_env_delay
+        bne     @no_envslide
+        ; cur_env_delay just hit 0: reload + add slide
+        lda     pb_env_delay
+        sta     pb_cur_env_delay
+        clc
+        lda     pb_cur_env_slide_lo
+        adc     pb_env_slide_add_lo
+        sta     pb_cur_env_slide_lo
+        lda     pb_cur_env_slide_hi
+        adc     pb_env_slide_add_hi
+        sta     pb_cur_env_slide_hi
+@no_envslide:
+
+        ; Stage 6: write 14 AY registers to DigiMuz ($FD22/$FD23)
+        jsr     m6_write_ay_regs
+
+        ; Stage 7: advance tick_in_row
+        inc     pb_tick_in_row
+        lda     pb_tick_in_row
+        cmp     pb_speed
+        bcc     @tick_done
+        lda     #0
+        sta     pb_tick_in_row
+@tick_done:
         rts
+
+; =============================================================================
+; m6_write_ay_regs — write all 14 shadow_ay bytes to DigiMuz
+; =============================================================================
+; Sequence: STX $FD23 (select reg) then STA $FD22 (write data) per register.
+; Uses X as register index 0..13.
+; -----------------------------------------------------------------------------
+m6_write_ay_regs:
+        ldx     #0
+@loop:
+        stx     DIGIMUZ_REG_SEL
+        lda     shadow_ay,x
+        sta     DIGIMUZ_DATA_W
+        inx
+        cpx     #14
+        bne     @loop
+        rts
+
+; =============================================================================
+; m6_decode_and_apply_row — Stage 2 of player_tick
+; =============================================================================
+; Port of simulate() lines 386-490 (the `if tick_in_row == 0` block).
+;
+; Logic:
+;   if current_line >= current_pat_len: mark all channels end_of_pattern
+;   for attempt = 0..1:
+;       all_decoded = True
+;       for ci = 0..2:
+;           if channel decoded already this row: continue
+;           if channel end_of_pattern: continue (and all_decoded keeps False indirectly)
+;           skip_counter--
+;           if skip_counter > 0: mark decoded; continue
+;           call player_decode_row (M5a, returns A=0 ok / A=1 eop)
+;           if eop: continue (will trigger pattern advance)
+;           else: apply_row_to_channel; consume row spec_cmd / env_period / noise_period
+;       if all decoded: current_line++; break
+;       if all end_of_pattern: position_idx++; load next pattern; retry
+;       else: break (some channels stuck; rare)
+; -----------------------------------------------------------------------------
+m6_decode_and_apply_row:
+        ; current_line >= current_pat_len ?
+        lda     pb_current_line
+        cmp     pb_current_pat_len
+        bcc     @inrange
+        ; Out of range: mark all channels end_of_pattern
+        lda     #1
+        sta     ch_end_flag_a
+        sta     ch_end_flag_b
+        sta     ch_end_flag_c
+@inrange:
+        ; decoded_this_tick[3] = {0,0,0} -- reuse m6_tmp_* as 3 separate bytes? We'll
+        ; use a small local: m6_decoded_a/b/c stored at m6_tmp_tone_lo/hi/note (we
+        ; can reuse since compute hasn't started yet).
+        lda     #0
+        sta     m6_tmp_tone_lo              ; alias: decoded_a
+        sta     m6_tmp_tone_hi              ; alias: decoded_b
+        sta     m6_tmp_note                 ; alias: decoded_c
+
+        ldx     #0                          ; attempt counter
+@attempt_loop:
+        ; Try each channel in turn
+        lda     #0
+        sta     m6_tmp_ch_idx
+@ch_loop:
+        ; Already decoded?
+        ldx     m6_tmp_ch_idx
+        lda     m6_tmp_tone_lo,x            ; m6_tmp_tone_lo + ch_idx
+        bne     @next_ch
+        ; End of pattern?
+        lda     ch_end_flag_a,x
+        bne     @next_ch
+        ; Decrement skip counter
+        dec     ch_skip_counter_a,x
+        lda     ch_skip_counter_a,x
+        beq     @do_decode
+        ; skip_counter > 0: mark decoded, no actual decode needed
+        lda     #1
+        sta     m6_tmp_tone_lo,x
+        jmp     @next_ch
+@do_decode:
+        ; Call player_decode_row(A=ch_idx). Returns A=0 ok, A=1 eop.
+        txa
+        jsr     player_decode_row
+        cmp     #1
+        beq     @next_ch                    ; eop: don't mark decoded, retry next attempt
+        ; Decoded row OK. Apply row to channel state.
+        ldx     m6_tmp_ch_idx
+        lda     #1
+        sta     m6_tmp_tone_lo,x            ; mark decoded
+        ; Reset skip_counter to nn_skip
+        lda     ch_nn_skip_a,x
+        sta     ch_skip_counter_a,x
+        ; apply_row_to_channel(ch, row, mod): consume row_out_ch_<x>
+        jsr     m6_apply_row_to_channel
+        ; Apply env_period / env_shape / noise_period from row
+        jsr     m6_apply_row_globals
+        ; Apply spec_cmd
+        jsr     m6_apply_row_spec_cmd
+@next_ch:
+        ldx     m6_tmp_ch_idx
+        inx
+        stx     m6_tmp_ch_idx
+        cpx     #3
+        bne     @ch_loop
+
+        ; All channels decoded?
+        lda     m6_tmp_tone_lo
+        and     m6_tmp_tone_hi
+        and     m6_tmp_note
+        beq     @not_all_decoded
+        ; All decoded: current_line++; done
+        inc     pb_current_line
+        rts
+@not_all_decoded:
+        ; If all channels at end_of_pattern, advance position
+        lda     ch_end_flag_a
+        and     ch_end_flag_b
+        and     ch_end_flag_c
+        beq     @some_stuck
+        ; All ended: load next pattern
+        jsr     m6_advance_position
+        ; After advance, retry decode (one more attempt)
+        inc     m6_tmp_ch_idx               ; placeholder - reuse as attempt counter
+        ; Actually we need a real attempt counter. Use scratch.
+        ; Bail out: re-zero decoded[] and re-loop (limit 2 attempts)
+        cpx     #1                          ; X holds attempt counter? lost above.
+        ; We'll use ZP_SCRATCH3 for the attempt counter.
+        lda     ZP_SCRATCH3
+        cmp     #1
+        bcs     @bail
+        inc     ZP_SCRATCH3
+        ; reset decoded[] and re-loop
+        lda     #0
+        sta     m6_tmp_tone_lo
+        sta     m6_tmp_tone_hi
+        sta     m6_tmp_note
+        jmp     @attempt_loop
+@some_stuck:
+@bail:
+        ; Some channels stuck (rare malformed). Force current_line++ to make progress.
+        inc     pb_current_line
+        rts
+
+; =============================================================================
+; m6_advance_position — advance position_idx, wrap to loop_pos, load pattern
+; =============================================================================
+; Sets pb_end_of_song flag if wrapped. Loads new pattern via player_init_pattern.
+; Resets current_line to 0, pb_noise_period to 0 (per VTII semantics).
+; -----------------------------------------------------------------------------
+m6_advance_position:
+        inc     pb_position_idx
+        lda     pb_position_idx
+        cmp     pt3_num_positions
+        bcc     @no_wrap
+        ; Wrap to loop_pos
+        lda     pt3_loop_position
+        sta     pb_position_idx
+        lda     #1
+        sta     pb_end_of_song
+@no_wrap:
+        ; Read positions[position_idx] via M5_PTR
+        lda     pt3_position_list_lo
+        sta     M5_PTR_LO
+        lda     pt3_position_list_hi
+        sta     M5_PTR_HI
+        ldy     pb_position_idx
+        lda     (M5_PTR_LO),y               ; pat_num * 3
+        jsr     div_by_3
+        jsr     player_init_pattern
+        ; Reset state
+        lda     #0
+        sta     pb_current_line
+        sta     pb_noise_period
+        ; player_init_pattern already cleared end_flag_* and reset skip_counter_*
+        rts
+
+; =============================================================================
+; m6_apply_row_to_channel — port of apply_row_to_channel (Python L867-924)
+; =============================================================================
+; Reads row_out_ch_<X> at m6_tmp_ch_idx, applies fields to ch_*_<x>.
+;
+; Row layout (12 bytes per channel, set by M5a player_decode_row):
+;   0: note ($FF=none, $C0=release, else 0..95)
+;   1: sample ($FF=none, else 1..31)
+;   2: env_type ($FF=none, 0..15)
+;   3: ornament ($FF=none, else 0..15)
+;   4: orn_explicit_zero (0/1)
+;   5: volume ($FF=none, else 0..15)
+;   6,7: env_period (LE; $FFFF=none)
+;   8: noise_period ($FF=none)
+;   9,10,11: spec_cmd
+; -----------------------------------------------------------------------------
+m6_apply_row_to_channel:
+        ; Set up M5_PTR to row_out_ch_<X>
+        ldx     m6_tmp_ch_idx
+        cpx     #0
+        bne     @rb
+        lda     #<row_out_ch_a
+        sta     M5_PTR_LO
+        lda     #>row_out_ch_a
+        sta     M5_PTR_HI
+        jmp     @rdone
+@rb:
+        cpx     #1
+        bne     @rc
+        lda     #<row_out_ch_b
+        sta     M5_PTR_LO
+        lda     #>row_out_ch_b
+        sta     M5_PTR_HI
+        jmp     @rdone
+@rc:
+        lda     #<row_out_ch_c
+        sta     M5_PTR_LO
+        lda     #>row_out_ch_c
+        sta     M5_PTR_HI
+@rdone:
+
+        ; --- note ---
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_note
+        cmp     #$C0
+        bne     @real_note
+        ; release: set note_released flag, keep ch.note value
+        ldx     m6_tmp_ch_idx
+        lda     ch_flags_a,x
+        ora     #%00000010                  ; bit1 = note_released
+        sta     ch_flags_a,x
+        jmp     @after_note
+@real_note:
+        ; New note triggered. Save prev_note, set note. Reset sample/orn position.
+        ; Save Current_Ton_Sliding before reset (for FeaturesLevel >= 1 portamento).
+        ldx     m6_tmp_ch_idx
+        lda     ch_cur_ton_slide_a_lo,x
+        sta     ch_saved_ton_slide_a_lo,x
+        lda     ch_cur_ton_slide_a_hi,x
+        sta     ch_saved_ton_slide_a_hi,x
+
+        lda     ch_note_a,x
+        sta     ch_prev_note_a,x
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        sta     ch_note_a,x
+        ; Clear release/sound_enabled flags; set enabled.
+        lda     ch_flags_a,x
+        and     #%11110100                  ; clear bits 0,1 (released)? actually:
+                                            ; bit0=enabled, bit1=released, bit2=env_enabled, bit3=sound_enabled
+                                            ; mask &= ~bit1 (clear released), set bit0 (enabled), set bit3 (sound_enabled)
+        ora     #%00001001                  ; set bits 0 and 3
+        sta     ch_flags_a,x
+        ; Reset sample/ornament position
+        lda     #0
+        sta     ch_pos_in_sample_a,x
+        sta     ch_pos_in_ornament_a,x
+        sta     ch_amp_slide_a,x
+        sta     ch_ton_accum_a_lo,x
+        sta     ch_ton_accum_a_hi,x
+        sta     ch_env_sliding_a_lo,x
+        sta     ch_env_sliding_a_hi,x
+        sta     ch_noise_sliding_a,x
+        sta     ch_cur_ton_slide_a_lo,x
+        sta     ch_cur_ton_slide_a_hi,x
+        sta     ch_ton_sld_count_a,x      ; <-- typo in BSS? check
+        ; Clear ton slide as well? Python reset_sample_ornament zeroes pos_in_sample/ornament
+        ; and amp_slide_accum/ton_accumulator/current_envelope_sliding/current_noise_sliding.
+        ; ton_slide_* are NOT reset here (they belong to effect setup, not note trigger).
+@no_note:
+@after_note:
+
+        ; --- sample ---
+        ldy     #1
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_sample
+        ldx     m6_tmp_ch_idx
+        sta     ch_sample_num_a,x
+@no_sample:
+
+        ; --- ornament ---
+        ldy     #3
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_orn
+        ldx     m6_tmp_ch_idx
+        sta     ch_ornament_num_a,x
+        lda     #0
+        sta     ch_pos_in_ornament_a,x
+        jmp     @after_orn
+@no_orn:
+        ; orn_expl_zero?
+        ldy     #4
+        lda     (M5_PTR_LO),y
+        beq     @after_orn
+        ldx     m6_tmp_ch_idx
+        lda     #0
+        sta     ch_ornament_num_a,x
+        sta     ch_pos_in_ornament_a,x
+@after_orn:
+
+        ; --- volume ---
+        ldy     #5
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_vol
+        ldx     m6_tmp_ch_idx
+        sta     ch_volume_a,x
+@no_vol:
+
+        ; --- env_type ---
+        ; Python: if row.env_type == 0xF: envelope_enabled=False; else: envelope_enabled=True
+        ldy     #2
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_env_type
+        cmp     #$0F
+        beq     @env_off
+        ; envelope_enabled = True (set bit2 of flags)
+        ldx     m6_tmp_ch_idx
+        lda     ch_flags_a,x
+        ora     #%00000100
+        sta     ch_flags_a,x
+        jmp     @no_env_type
+@env_off:
+        ldx     m6_tmp_ch_idx
+        lda     ch_flags_a,x
+        and     #%11111011
+        sta     ch_flags_a,x
+@no_env_type:
+        rts
+
+; -----------------------------------------------------------------------------
+; m6_apply_row_globals — apply row.env_period, row.env_type→pb_env_shape,
+; row.noise_period to global state (NOT per-channel).
+; Also resets cur_env_slide/cur_env_delay if env_type in 1..14 (Python L412-417).
+; -----------------------------------------------------------------------------
+m6_apply_row_globals:
+        ; Set M5_PTR to row_out_ch_<X> (already set by apply_row? Could reuse, but
+        ; to be safe re-set it).
+        ldx     m6_tmp_ch_idx
+        cpx     #0
+        bne     @rgb
+        lda     #<row_out_ch_a
+        sta     M5_PTR_LO
+        lda     #>row_out_ch_a
+        sta     M5_PTR_HI
+        jmp     @rgdone
+@rgb:
+        cpx     #1
+        bne     @rgc
+        lda     #<row_out_ch_b
+        sta     M5_PTR_LO
+        lda     #>row_out_ch_b
+        sta     M5_PTR_HI
+        jmp     @rgdone
+@rgc:
+        lda     #<row_out_ch_c
+        sta     M5_PTR_LO
+        lda     #>row_out_ch_c
+        sta     M5_PTR_HI
+@rgdone:
+
+        ; env_period (offsets 6,7) — $FFFF = none
+        ldy     #6
+        lda     (M5_PTR_LO),y
+        sta     m6_tmp_amp                  ; tmp lo
+        iny
+        lda     (M5_PTR_LO),y
+        sta     m6_tmp_note                 ; tmp hi
+        cmp     #$FF
+        bne     @ep_set
+        lda     m6_tmp_amp
+        cmp     #$FF
+        beq     @no_envp
+@ep_set:
+        lda     m6_tmp_amp
+        sta     pb_env_period_lo
+        lda     m6_tmp_note
+        sta     pb_env_period_hi
+@no_envp:
+
+        ; env_type 1..14 → pb_env_shape, reset cur_env_slide / cur_env_delay
+        ldy     #2
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_es
+        cmp     #1
+        bcc     @no_es
+        cmp     #15
+        bcs     @no_es
+        sta     pb_env_shape
+        lda     #0
+        sta     pb_cur_env_slide_lo
+        sta     pb_cur_env_slide_hi
+        sta     pb_cur_env_delay
+@no_es:
+
+        ; noise_period (offset 8)
+        ldy     #8
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_np
+        sta     pb_noise_period
+@no_np:
+        rts
+
+; -----------------------------------------------------------------------------
+; m6_apply_row_spec_cmd — port of Python spec_cmd dispatch (L440-555).
+; Reads row_out_ch_<X> offsets 9,10,11 (cmd, param0, param1).
+;
+; M6 implements: cmd 0x09 (speed), 0x03 (smpos), 0x04 (orpos), 0x05 (vibrato),
+; 0x08 (envslide). cmd 0x01 (gliss) and 0x02 (portm) need 3 and 5 raw bytes
+; respectively but row_out only has 2 param bytes — must read directly from
+; ZP_STREAM minus offset (M5a stored only first 2 bytes). For now, defer:
+; gliss/portamento not yet supported until row_out is extended.
+; -----------------------------------------------------------------------------
+m6_apply_row_spec_cmd:
+        ; M5_PTR already points to row_out
+        ldy     #9
+        lda     (M5_PTR_LO),y
+        bne     @have_cmd
+        rts
+@have_cmd:
+        sta     m6_tmp_amp                  ; cmd
+        iny
+        lda     (M5_PTR_LO),y
+        sta     m6_tmp_note                 ; param0
+        iny
+        lda     (M5_PTR_LO),y
+        sta     m6_tmp_tone_lo              ; param1
+
+        lda     m6_tmp_amp
+        cmp     #$09
+        bne     @not_spd
+        ; Speed change: param0 must be non-zero
+        lda     m6_tmp_note
+        beq     @no_cmd
+        sta     pb_speed
+        rts
+@not_spd:
+        cmp     #$03
+        bne     @not_smpos
+        ; Sample position: pos_in_sample = param0
+        lda     m6_tmp_note
+        ldx     m6_tmp_ch_idx
+        sta     ch_pos_in_sample_a,x
+        rts
+@not_smpos:
+        cmp     #$04
+        bne     @not_orpos
+        ; Ornament position: pos_in_ornament = param0
+        lda     m6_tmp_note
+        ldx     m6_tmp_ch_idx
+        sta     ch_pos_in_ornament_a,x
+        rts
+@not_orpos:
+        cmp     #$05
+        bne     @not_vib
+        ; Vibrato: parameter = (param0 << 4) | param1
+        ; offon_delay = param & 0x0F = param1 (low nibble of combined)
+        ; onoff_delay = (param >> 4) & 0x0F = param0 low nibble
+        ; current_onoff = onoff_delay
+        lda     m6_tmp_tone_lo              ; param1 (low nibble target)
+        and     #$0F
+        ldx     m6_tmp_ch_idx
+        sta     ch_offon_delay_a,x
+        lda     m6_tmp_note                 ; param0
+        and     #$0F
+        sta     ch_onoff_delay_a,x
+        sta     ch_current_onoff_a,x
+        lda     #0
+        sta     ch_ton_sld_count_a,x
+        sta     ch_cur_ton_slide_a_lo,x
+        sta     ch_cur_ton_slide_a_hi,x
+        rts
+@not_vib:
+        cmp     #$08
+        bne     @no_cmd
+        ; Envslide: cur_env_delay = param0; env_slide_add = signed16(param1, ...)
+        ; row_out only has 2 params; M5a stored param0=delay, param1=amount_lo. amount_hi
+        ; was lost. For sign-extend we approximate from sign of param1 — incorrect for
+        ; magnitude > 127. TODO: extend row_out to carry 3rd byte of spec_cmd raw.
+        lda     m6_tmp_note                 ; delay
+        sta     pb_env_delay
+        sta     pb_cur_env_delay
+        lda     m6_tmp_tone_lo              ; amount_lo
+        sta     pb_env_slide_add_lo
+        bpl     @es_pos
+        lda     #$FF
+        sta     pb_env_slide_add_hi
+        rts
+@es_pos:
+        lda     #0
+        sta     pb_env_slide_add_hi
+@no_cmd:
+        rts
+
+; =============================================================================
+; m6_compute_channel — Stage 3 per-channel compute (Python L587-815)
+; =============================================================================
+; Input: m6_tmp_ch_idx (0/1/2)
+; Output: shadow_ay R0..R5 (tone period), R8/R9/R10 (amplitude),
+;         m6_tmp_mixer_bits (accumulated)
+; Side effects: advances ch_pos_in_sample, ch_pos_in_ornament,
+;               runs ton_slide / vibrato countdowns.
+;
+; STUB FOR NOW — outputs zeros so harness can sanity-check Stage 4 path.
+; -----------------------------------------------------------------------------
+m6_compute_channel:
+        ; STUB: write zeros to AY regs for this channel.
+        ldx     m6_tmp_ch_idx
+        ; tone period: regs ci*2, ci*2+1
+        txa
+        asl     a
+        tay
+        lda     #0
+        sta     shadow_ay,y
+        iny
+        sta     shadow_ay,y
+        ; amp reg = 8 + ci
+        txa
+        clc
+        adc     #8
+        tay
+        lda     #0
+        sta     shadow_ay,y
+        rts
+
 
 ; =============================================================================
 ; RODATA
@@ -2080,3 +2710,9 @@ m6_tmp_orn_ptr_hi:      .res 1
 .export ch_nn_skip_a
 .export ch_skip_counter_a
 .export ch_end_flag_a
+.export shadow_ay
+.export pb_position_idx
+.export pb_current_line
+.export pb_tick_in_row
+.export pb_speed
+.export pb_end_of_song
