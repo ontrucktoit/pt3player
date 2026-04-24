@@ -1,10 +1,10 @@
 # PT3 Player — Project Status
 
-**Last updated:** 2026-04-24 (after M5a)
-**Current milestone:** M5a DONE — M5b (skip+multi-channel driver) next
-**Binary footprint:** 1850 / 4096 bytes used (45.2%), 2246 bytes remaining
-**Regression:** 17 / 17 tests PASS
-**Deterministic build:** `player.bin` md5 = `aabe39775c81802fd04e3e191d021e2a`
+**Last updated:** 2026-04-24 (after M5b)
+**Current milestone:** M5 complete (M5a + M5b) — M6 (playback) next
+**Binary footprint:** 2281 / 4096 bytes used (55.7%), 1815 bytes remaining
+**Regression:** 20 / 20 tests PASS
+**Deterministic build:** `player.bin` md5 = `ab8aaba089bd69c94763139b75627dce`
 
 This document is the living snapshot of where we are. The original design intent
 lives in [ARCHITECTURE.md](ARCHITECTURE.md) — that one is frozen as-planned and
@@ -22,7 +22,7 @@ real measurements and any design adjustments.
 | M3  | Volume Table Generator        | DONE   | 2/2    |     962 B  |  +288 | ab37dcb641957e4a321aaf68ffca5817       |
 | M4  | PT3 Header Parser             | DONE   | 3/3    |    1181 B  |  +219 | ad5ccbafec9b0fd7a1e0a9e2db2f7675       |
 | M5a | Pattern Opcode Decoder (1 ch) | DONE   | 3/3    |    1850 B  |  +669 | aabe39775c81802fd04e3e191d021e2a       |
-| M5b | Skip + Multi-channel Driver   | TODO   | 0/?    |          ? |     ? |                                        |
+| M5b | Skip + Multi-channel Driver   | DONE   | 3/3    |    2281 B  |  +431 | ab8aaba089bd69c94763139b75627dce       |
 | M6  | Notes-only Playback           | TODO   | 0/?    |          ? |     ? |                                        |
 | M7  | Sample Playback               | TODO   | 0/?    |          ? |     ? |                                        |
 | M8  | Ornaments                     | TODO   | 0/?    |          ? |     ? |                                        |
@@ -30,12 +30,13 @@ real measurements and any design adjustments.
 | M10 | 14 edge case design notes     | TODO   | 0/14   |          ? |     ? | Verify each note is covered            |
 | M11 | Full 20-file regression       | TODO   | 0/20   |          ? |     0 | Exit criterion: 20/20 bit-exact        |
 
-Total regression status: **17 / 17 tests PASS** (M1: 1, M2: 8, M3: 2, M4: 3, M5a: 3).
-M5a also validates 4381/4381 individual rows bit-exact across all 14 opcode ranges.
+Total regression status: **20 / 20 tests PASS** (M1: 1, M2: 8, M3: 2, M4: 3, M5a: 3, M5b: 3).
+M5a also validates 4381/4381 rows bit-exact across all 14 opcode ranges.
+M5b also validates 2405/2405 ticks bit-exact (37 bytes/tick ≈ 89 KB of output).
 
 ---
 
-## Memory map (current, after M5a)
+## Memory map (current, after M5b)
 
 Player is a co-resident library at `$3000-$3FFF` (4 KB budget).
 
@@ -55,22 +56,24 @@ $38C9 .. $38D9   BSS: pt3_* state       17 B    (M4 parsed header)
 $38DA .. $3905   BSS: row_out_ch_a/b/c  36 B    (M5a — 12 bytes per channel)
 $3906 .. $390B   BSS: ch_nn_skip + ch_end_flag   6 B   (M5a per-channel state)
 $390C .. $3911   BSS: dec_* scratch      6 B    (M5a decoder temporaries)
-$3912 .. $3FFF   FREE                 1774 B    (for M5b..M11 code + BSS growth)
+$3912 .. $3FFF   FREE                 ~1815 B   (for M6..M11 code + BSS growth)
+                                                 (M5b added ~431 B code + 8 B BSS)
 ```
 
 Note: offsets are approximate — the assembler may pack code and BSS slightly
 differently; what matters is the binary size (1850 B) and BSS total (~657 B).
 
-**Binary remaining**: 4096 - 1850 = **2246 bytes** for M5b-M11.
+**Binary remaining**: 4096 - 2281 = **1815 bytes** for M6-M11.
 
-**Budget for M5b-M11**: 2246 bytes. Estimated split:
-- M5b (skip+multi-channel driver): ~100-150 B code
+**Budget for M6-M11**: 1815 bytes. M5b came in at 431 B vs estimated 150 B —
+3-way channel dispatch triplet is verbose on 6502. Revised estimates:
 - M6 (playback): ~300-500 B code + small BSS
-- M7-M9 (samples, ornaments, effects a-f): the biggest chunk, ~800-1200 B total
-- M10-M11: regression only, no new code
+- M7-M9 (samples, ornaments, effects a-f): ~800-1200 B total
+- M10-M11: regression only
 
-If budget gets tight later, M5a itself has ~100-200 B of easy optimization
-(consolidate per-channel prolog/epilog triplets into table-driven code).
+Optimization available if tight: M5a and M5b both have ~100-200 B each of
+easy savings by replacing per-channel if-else triplets with table-driven
+dispatch (3 address pairs → indirect jump). Defer until budget demands it.
 - M7 (samples): ~300 B code + sample-state BSS per channel × 3
 - M8 (ornaments): ~200 B code + ornament-state BSS per channel × 3
 - M9 (effects a-f): ~500 B code + effect-state BSS per channel × 3

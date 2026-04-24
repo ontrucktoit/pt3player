@@ -477,3 +477,101 @@ Skip counter logic + multi-channel driver. Much simpler than M5a:
 - loop through 3 channels per row tick
 
 Estimated budget: 100-150 bytes. Expected to be a breeze after M5a.
+
+---
+
+## Session 7 — 2026-04-24 (cont.)
+## M5b: Skip + Multi-channel Driver
+
+### Python reference (decode_pattern)
+
+Short and simple function in `pt3_pattern_decoder.py`:
+```python
+for row_idx in range(num_rows):
+    for ch in channels:
+        if ch.end_of_pattern: emit empty, continue
+        ch.skip_counter -= 1
+        if ch.skip_counter > 0: emit empty, continue  # skipped row
+        rs = decode_next_row(data, ch)  # resets ch.skip_counter = ch.nn_skip
+        emit rs or empty if None
+```
+
+Note: Python's `decode_next_row` has a side-effect — it resets
+`ch.skip_counter = ch.nn_skip` after successful decode. M5a didn't replicate
+this side-effect (no reason to; M5a has no skip logic). M5b driver does the
+reset itself after each successful call to player_decode_row, which keeps
+M5a unchanged and confines the skip semantics to the driver where it belongs.
+
+### Entry points
+
+`player_init_pattern(A=pattern_number)` at $3021:
+- Compute `patterns_table + pattern_number * 6` via X*4+X*2 shift/add
+- Read 6 file-relative stream pointers for ch A/B/C
+- Convert each to absolute: `zp_stream_X = pt3_base + file_offset`
+- Reset per-channel state: `nn_skip=1`, `skip_counter=1`, `end_flag=0`
+
+`player_decode_row_all()` at $3024:
+- Three identical blocks (ch A/B/C) with symbol offsets
+- Each block: end-flag check → skip counter dec → decode call → eop handling
+- Returns A = count of channels still active (not in end_of_pattern)
+- When A=0, pattern is fully exhausted
+
+Helper `fill_sentinels_ch(X=channel_idx)`: fills 12-byte row_out with
+$FF-sentinels. Used by skipped rows, ended channels, and eop transitions.
+Saves ~40 bytes vs inlining 3×.
+
+### Critical design question: what's "active"?
+
+For Python parity, I treated a **skipping channel as still active**. Rationale:
+it's still in the middle of the pattern, just quiet for N-1 rows. Only
+channels that hit $00 (end_of_pattern) count as inactive. This makes
+`active==0` a clean "pattern fully done" signal that M6 pattern engine can
+use to advance position.
+
+Alternative considered: active = only channels that actually decoded this
+tick. Rejected because this would make active bounce 3→0→3→0... in patterns
+with `nn_skip>1` synchronized across channels, which is normal.
+
+### Implementation gotcha avoided
+
+File-relative → absolute conversion needs **full 16-bit add**, not just
+high-byte add. Initially wrote `adc pt3_base_hi` only, assuming base has
+`lo==0` (which it does for $8000). But M4 supports arbitrary base, so
+base_lo could be non-zero. Using only high-byte add would break if the
+user ever loads a PT3 at, say, $8050. Fixed to full 16-bit add (+9 bytes).
+
+### Results — 2405/2405 ticks bit-exact, FIRST TRY
+
+```
+M5b - Skip + Multi-channel Driver
+  luchibobra.pt3: PASS (455 ticks)
+  blobbzgame.pt3: PASS (520 ticks)
+  yerzmyey.pt3:  PASS (1430 ticks)
+  Result: 3/3 files; 2405/2405 ticks bit-exact
+```
+
+Full regression: **20/20 PASS**. Size +431 B (2281/4096, 55.7%).
+Remaining for M6-M11: **1815 B**.
+
+Unlike M5a, M5b needed zero build fixes — assembled cleanly first try,
+linked cleanly, passed tests on first run. That's what happens when
+(a) the Python reference is crystal clear, (b) the data structures from
+the previous milestone fit without change, and (c) you learn not to use
+BSS-as-ZP-pointer and long branches to deferred targets.
+
+### Merge workflow
+
+Branch `feature/m5b-driver` → commit `d811bdc` → merge `cc24d21` (no-ff)
+→ tag `m5b-complete` → branch deleted (local+remote).
+
+### Next: M6 (playback) — the big integration
+
+M6 is where everything becomes audible:
+- Generate tone periods from note + note_table
+- Apply volume, envelope, noise to AY registers ($FD21/$FD22/$FD23)
+- Pattern engine (position list traversal, $FF terminator, loop_pos)
+- Frame IRQ at 50/60 Hz driving player_decode_row_all + AY update
+- Integration with existing jukebox UI (main/directory/display)
+
+Estimated 300-500 bytes of code. First playback on real DigiMuz at the end
+of this milestone — the moment everything to date becomes audible.
