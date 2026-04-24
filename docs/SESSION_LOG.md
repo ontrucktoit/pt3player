@@ -327,3 +327,153 @@ than rewritten.
 Per-channel stream decoder for pattern data. Single-channel initially, no
 state advancement — "given stream pointer, return next decoded row". Design
 questions listed in STATUS.md open questions section. Budget: ~400-500 bytes.
+
+---
+
+## Session 7 — 2026-04-24 (continued)
+## M5a: Pattern Row Decoder (single channel)
+
+### Scope decision — scope Q, output format Q, ptr storage Q
+
+Three design questions before implementation:
+
+1. **Scope**: M5 as one big milestone, or split? → **M5a = single-channel
+   decode_next_row; M5b = skip counters + multi-channel driver**. Isolates
+   the most complex piece (14 opcode ranges + SPC_CMD) from the easier
+   sequencing logic.
+2. **Output format**: RowState-like struct, shadow_ay direct write, or
+   globals? → **Dedicated BSS struct (12 bytes per channel, mirrors Python
+   RowState)**. Easy to diff against Python. shadow_ay writes deferred to M6
+   where they belong.
+3. **Stream pointer storage**: ZP, BSS+swap, or BSS+copy? → **3 per-channel
+   pointers in ZP `$D8-$DD`** (already reserved). 6 bytes of ZP, zero swap
+   cost, direct `(zp),y` access.
+
+### Python reference study
+
+Read `/home/linumax/commodore/jukebox/pt3_python_sim/pt3_python_sim/pt3_pattern_decoder.py`
+(488 lines). Key findings captured in M5a_spec artifact:
+
+- 14 opcode ranges with specific rules. Most single-byte, some 2-3 byte.
+- **Envelope period is BIG-endian** (only exception in PT3 format).
+- **$10 special case**: per VTII trfuncs.pas, opcode $10 means "envelope
+  explicitly OFF" with just 1 sample byte, NOT env_period + sample. Without
+  this, Avatar PT3.4 pattern 3 row 34 fails.
+- **$40 (ORN=0) special case**: sets `ornament_explicit_zero` flag, and if
+  env_type not already set this row, also sets env_type=$0F (off).
+- **SPC_CMD params consumed AFTER row terminator**, in stream order. Python
+  keeps only last cmd in `row.spec_cmd`. M5a matches.
+
+### Opcode coverage analysis
+
+Across 3 test files (luchibobra, blobbzgame, yerzmyey), all 14 opcode ranges
+are exercised at least once — 129 unique opcode values observed. Therefore
+M5a passing 3 test files proves all handlers work. Confirmed before writing
+any 6502 code; avoids future surprise of "oh, we never tested opcode X".
+
+### Golden reference bins
+
+Generated `tests/m5a_ref_*.bin` (62 KB total, 4381 rows) via Python sim.
+Format:
+```
+magic 'M5A\x01'
+num_sequences (2 bytes LE)
+for each sequence:
+  pattern_num (1), channel (1), start_ptr (2 LE), num_rows (2 LE)
+  for each row: 12-byte row_out + 2-byte end_ptr
+```
+
+Harness walks this structure; no inline Python row-generation at test time
+(would take minutes; from-file takes <1 second).
+
+### Implementation
+
+`player_decode_row(A=channel_idx)` at $301E. Fills `row_out_ch_<ch>` BSS
+(12 bytes) with the opcodes consumed for one row; advances
+`ZP_STREAM_<ch>_LO/HI` past all consumed bytes. Returns A=0 on success,
+A=1 on end-of-pattern.
+
+Structure:
+1. **Channel selector** (prolog): 3-way branch on `dec_current_ch`. Load
+   `ZP_STREAM_X` into `M5_PTR_LO/HI`, compute `M5_OUT_LO/HI` pointing at
+   `row_out_ch_X`.
+2. **Sentinel fill**: write $FF to 10 fields, 0 to orn_expl_zero + spec_cmd.
+3. **Main loop**: fetch byte via `lda (M5_PTR_LO),y`, increment ZP ptr,
+   dispatch by range.
+4. **14 opcode handlers**: each consumes its params, writes to row_out,
+   jumps back to decode_loop. Row-terminator handlers jump forward.
+5. **SPC_CMD consumption**: after terminator, loop through queued commands;
+   for each, look up param count in `SPC_CMD_PARAM_TABLE`, read first 2 param
+   bytes into row_out, skip any extras, advance ZP ptr.
+6. **Epilog**: save `M5_PTR_LO/HI` back to `ZP_STREAM_<ch>_LO/HI`, RTS A=0.
+
+### Bugs fixed during implementation
+
+**Bug 1 — BSS-as-ZP-pointer**: Initially declared `dec_ptr_lo/hi` and
+`dec_out_ptr_lo/hi` in BSS. Every `sta (dec_ptr_lo),y` got "Range error"
+at assembly — 6502 `(zp),y` addressing encodes ZP in single byte, BSS
+labels at $36xx don't fit. Fix: declare as ZP aliases in `pt3_player.inc`
+(`M5_PTR_LO = ZP_TEMP_LO`, etc.). Share with M2's apply_corrections since
+the two routines don't run concurrently. 50+ range errors → 0.
+
+**Bug 2 — Long-branch range errors in dispatch ladder**: After bug 1,
+3 remaining errors: `bcc @range_b0_bf` at 160+ byte offset. Fix: invert
+sense, `BCS @skip / JMP @target / @skip:`.
+
+Third build: clean, 0 errors, 0 warnings.
+
+### Cross-validation
+
+Sandbox build: `player.bin` md5 `aabe39775c81802fd04e3e191d021e2a`, 1850 B.
+Server build (ca65 V2.18): **identical md5**. Deterministic build confirmed.
+
+Python golden ref bins generated on server (matching sandbox md5s):
+- `m5a_ref_luchibobra.bin` md5 `a3a225e5de96de72815227d296a8d0b3`
+- `m5a_ref_blobbzgame.bin` md5 `8362ff17b96bf074721c72cccd327049`
+- `m5a_ref_yerzmyey.bin`   md5 `1f798da740333f1ae03134a84c8c5e41`
+
+### Results — 4381/4381 rows bit-exact, FIRST TRY after build fixes
+
+```
+M5a - Pattern Row Decoder (single channel)
+  luchibobra.pt3: PASS (881 rows)
+  blobbzgame.pt3: PASS (277 rows)
+  yerzmyey.pt3: PASS (3223 rows)
+  Result: 3/3 files; 4381/4381 rows bit-exact
+```
+
+Full regression: **17/17 PASS** (M1 + M2×8 + M3×2 + M4×3 + M5a×3).
+
+Size delta: +669 B (estimated 280). Budget remaining: 2246 B for M5b-M11.
+Over-run is expected for dispatch-heavy code; optimizable later if needed.
+
+Merge commit `5e8fe1d`, tag `m5a-complete`, branch `feature/m5a-decode-row`
+deleted.
+
+### Self-correction (pre-M5a)
+
+Sidebar before starting M5: user flagged that Deater's spec says position
+list is $FF-terminated, contradicting earlier session notes. Verified on
+all 19 test files — Deater was right, my earlier claim was wrong.
+Documentation in STATUS.md + SESSION_LOG.md + memory #15 corrected in
+commit `c22a94f` before M5a design relied on the wrong assumption.
+Good example of "when your memory disagrees with a reference spec, the
+spec is probably right — verify on real data, don't argue from priors."
+
+### Key lesson
+
+**Python reference + golden ref binary + bit-exact comparison = zero debug
+cycles after build fixes.** The 3 bugs I hit were assembly-toolchain issues
+(range errors, ZP addressing), not logic bugs. The logic was correct from
+the first write because the spec was clear and the test was mechanical.
+This is the right way to build the rest of the player.
+
+### Next: M5b
+
+Skip counter logic + multi-channel driver. Much simpler than M5a:
+- decrement `ch_skip_counter_<ch>` each row tick
+- when it hits 0, call `player_decode_row(<ch>)` for that channel
+- reset to `ch_nn_skip_<ch>`
+- loop through 3 channels per row tick
+
+Estimated budget: 100-150 bytes. Expected to be a breeze after M5a.
