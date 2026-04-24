@@ -131,3 +131,30 @@ This is where real complexity starts. Ivan Roshin's Z80 asm is ~60 lines;
 we need 6502 port with 16-bit arithmetic (no 16-bit regs on 6502!).
 Estimated size: 150-250 bytes of code + 192 bytes table RAM + a few
 constants ~20 bytes. Should fit comfortably.
+
+### M1 real-world validation — YAPE — PASS ✓
+
+Kris loaded `m1_test_simple.prg` into YAPE 1.2.7 emulator and ran it.
+
+Result: **Continuous A-4 tone heard on DigiMuz emulation.** 🎉
+
+Status bar confirmed: `Loaded: m1_test_simple.prg at $1001-$2098` — matching
+our build's 4249-byte output.
+
+This validates the full stack end-to-end on an actual Plus/4 emulator (not
+just py65): BASIC stub → SEI → player.bin copy to $3000 → JSR player_init →
+save/install IRQ vector → CLI → IRQ fires → JSR player_play → 14 AY register
+writes via DigiMuz → chain to KERNAL.
+
+Cosmetic note: `LIST` after RUN shows "garbage" lines after the real
+`10 SYS 4109` — this is the BASIC interpreter trying to parse our 6502
+machine code + embedded player.bin as BASIC tokens past the program
+terminator. No functional impact (RUN goes to $100D correctly, ignoring
+the rest). Worth a cleanup pass later but not blocking.
+
+**M1 is now fully complete.** Three independent validations:
+1. py65 harness: 60/60 frames bit-exact, deterministic output ✓
+2. YAPE emulator: audible tone ✓
+3. Real Plus/4 hardware: deferred, low risk (YAPE matches real HW)
+
+Ready for M2.
