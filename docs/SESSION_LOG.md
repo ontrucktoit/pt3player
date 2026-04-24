@@ -236,3 +236,87 @@ but more complex: 16-bit accumulator arithmetic (Z80 ADD HL,DE equivalent),
 conditional RLA in inner loop, IX register emulation. Expected ~500 bytes
 of code, 256 bytes of output table. Same validation pattern: 2 combinations
 (old/new volume table) bit-exact against Python reference.
+
+
+## Session 6 — 2026-04-24: M3 + M4 + STATUS.md
+
+### M3 — Volume Table Generator — PASS ✓ (2/2 bit-exact)
+
+Port of `build_volume_table(pt_version)` from `pt3_tables.py`. Runtime generator
+producing 256-byte table at `$35ED`. Dispatches on A on entry: `pt_version<5`
+initializes HL=$0010/DE=$0010/use_rla=0 (OLD variant for PT 3.0-3.4x),
+`pt_version>=5` initializes HL=$0011/DE=$0000/use_rla=1 (NEW variant for PT 3.5+).
+
+Implements Z80's nested 16×16 loop emulating ADD HL,DE / SBC HL,HL / EX DE,HL
+on 6502 with explicit carry propagation through BSS state (`vt_carry`). Inner
+loop does optional RLA (rotate-left-through-carry on A, capturing old bit 7),
+then A = H + carry, writes to table, advances HL += DE. Outer loop swaps HL↔DE,
+bumps E if E==$77 (quirk of original asm).
+
+OLD variant: 7822 py65 steps. NEW variant: 10330 steps. Both match Python
+reference byte-for-byte.
+
+Code size after M3: 962 bytes (+288 from M2). player.bin md5:
+`ab37dcb641957e4a321aaf68ffca5817`.
+
+Two bugs during development:
+- **Long BNE out of range**: `BNE @outer` from `@skip_einc` was >128 bytes away.
+  Fixed with `BEQ @done / JMP @outer` idiom. 6502 branch limit bit us.
+- **L/E swap inverted**: in the Z80 EX DE,HL emulation, the L↔E swap block
+  had STA/STX targets reversed, writing originals back to their own slots
+  instead of swapping. H↔D was correct, so symptom was "inner loop produces
+  all zeros because DE stays at its pre-swap value". Subtle — only one of
+  two swap pairs broken.
+
+### M4 — PT3 Header Parser — PASS ✓ (3/3 files)
+
+`player_load_pt3(A=base_hi, X=base_lo)` at `$3003` (replaces M1 stub).
+Parses PT3 header into 17-byte BSS struct with absolute pointers.
+
+Sanity-checks first 3 bytes for "Pro" or "Vor" (sets `pt3_parse_error=1`
+on mismatch). Extracts:
+- `version_char` from offset `$0D` and derives `features_level` (0/1/2)
+  per VTII `trfuncs.pas` rules
+- `tone_table`, `delay`, `num_positions`, `loop_position` from `$63-$66`
+- `patterns_ptr` = base + file[$67:$69]
+- `sample_table` = base + $69 (start of 32 sample pointers)
+- `ornament_table` = base + $A9 (start of 16 ornament pointers)
+- `position_list` = base + $C9 (`num_positions` bytes)
+
+All three reference files pass all 12 field checks on first try — no debug
+cycle needed. Steps: yerzmyey.pt3 77, luchibobra.pt3 75, blobbzgame.pt3 74.
+
+Code size after M4: 1181 bytes (+219 from M3, 28.8% of 4096). player.bin md5:
+`ad5ccbafec9b0fd7a1e0a9e2db2f7675`.
+
+PT3 format correction confirmed vs earlier docs/memory:
+- **Position list has NO `$FF` terminator.** `num_positions` at offset `$65`
+  is authoritative. Verified against all 3 files.
+- **Position list bytes are `pattern_num × 3`** (0, 3, 6, ...), not raw
+  pattern numbers. Consumer divides by 3 (or uses byte directly as
+  offset into 3-byte-per-pattern indexing — deferred to M5).
+- **Patterns table is array of 6-byte entries**, confirmed by Deater's spec
+  cited by Kris. Each entry = 3 × 2-byte LE stream pointers (A, B, C).
+  M5 consumes this.
+
+### Workflow improvements this session
+
+- **Branch-first development**: `feature/m4-header-parser` created before work,
+  merged with `--no-ff` to preserve topology, then deleted (local+remote).
+  Rollback safety: merge commit preserves full branch history.
+- **Patch transport instead of full file**: M4 moved 11 KB of diff vs 33 KB
+  of full file. `diff -u --label a/... --label b/...` + `patch -p1 --fuzz=3`.
+  Fuzzy patch saved the day when trailing-newline context drifted.
+
+### docs/STATUS.md — new living document
+
+Complement to frozen ARCHITECTURE.md. Captures real state after each milestone:
+sizes from git archaeology, full memory map from `.sym`, BSS inventory, jump
+table status, learnings, open questions. Updated after each milestone rather
+than rewritten.
+
+### Next: M5 — Pattern Opcode Decoder
+
+Per-channel stream decoder for pattern data. Single-channel initially, no
+state advancement — "given stream pointer, return next decoded row". Design
+questions listed in STATUS.md open questions section. Budget: ~400-500 bytes.
