@@ -1,12 +1,12 @@
 ; =============================================================================
-; player.s - PT3 Player M2+M3+M4+M5a+M5b: +Skip/Multi-channel Driver
+; player.s - PT3 Player M2+M3+M4+M5a+M5b+M6p1: +Smoke test tone
 ; =============================================================================
 
         .include "pt3_player.inc"
 
         .segment "CODE"
 
-; Jump table at $3000 (13 entries × 3 bytes)
+; Jump table at $3000 (14 entries × 3 bytes)
 jump_table:
         jmp player_init                  ; $3000
         jmp player_load_pt3              ; $3003
@@ -21,6 +21,7 @@ jump_table:
         jmp player_decode_row            ; $301E — M5a
         jmp player_init_pattern          ; $3021 — M5b
         jmp player_decode_row_all        ; $3024 — M5b
+        jmp player_play_test_tone        ; $3027 — M6-p1
 
 ; -----------------------------------------------------------------------------
 player_init:
@@ -1490,6 +1491,85 @@ fill_sentinels_ch:
         sta     (M5_OUT_LO),y       ; +10 spec_param0
         iny
         sta     (M5_OUT_LO),y       ; +11 spec_param1
+        rts
+
+; =============================================================================
+; player_play_test_tone()
+; =============================================================================
+; M6-p1 smoke test: sets AY to generate a pure tone on channel A.
+; Writes directly to DigiMuz registers ($FD21/$FD22/$FD23).
+;
+; AY setup:
+;   R0 = $00, R1 = $02   tone period ch A = $0200 (~mid-range C-ish)
+;   R2-R5 = 0            tone period ch B/C = 0 (silent if enabled, but masked)
+;   R6 = 0               noise period
+;   R7 = $3E             mixer: ch A tone enabled, B/C muted
+;                        (bit pattern: NC NB NA TC TB TA, 0=enable)
+;                        Actually: bit 0 = TA (0 enables ch A tone)
+;                                   bit 1 = TB   bit 2 = TC
+;                                   bit 3 = NA   bit 4 = NB   bit 5 = NC
+;                        $3E = %00111110 = TA enabled, TB/TC/NA/NB/NC disabled
+;   R8 = $0F             ch A amplitude = 15 (max), envelope off
+;   R9 = 0, R10 = 0      ch B/C amplitudes = 0
+;   R11-R13 = 0          envelope period and shape unused
+;
+; Does NOT require pt3 loaded or player_init. Pure hardware check.
+; Clobbers A, X.
+; -----------------------------------------------------------------------------
+player_play_test_tone:
+        ldx     #0
+        lda     #$00
+        stx     $FD23
+        sta     $FD22                    ; R0 = tone A lo
+        inx                              ; R1
+        lda     #$02
+        stx     $FD23
+        sta     $FD22                    ; R1 = tone A hi ($0200 period)
+
+        lda     #$00
+        ; R2..R6 = 0 (silence B/C tone, noise period 0)
+@zero_loop:
+        inx                              ; X = 2, 3, 4, 5, 6
+        stx     $FD23
+        sta     $FD22
+        cpx     #6
+        bne     @zero_loop
+
+        ; R7 mixer: $3E = enable A tone only
+        lda     #7
+        sta     $FD23
+        lda     #$3E
+        sta     $FD22
+
+        ; R8 = $0F max amplitude ch A
+        lda     #8
+        sta     $FD23
+        lda     #$0F
+        sta     $FD22
+
+        ; R9, R10 = 0 (ch B, C silent)
+        lda     #9
+        sta     $FD23
+        lda     #0
+        sta     $FD22
+        lda     #10
+        sta     $FD23
+        lda     #0
+        sta     $FD22
+
+        ; R11, R12, R13 = 0 (no envelope activity)
+        lda     #11
+        sta     $FD23
+        lda     #0
+        sta     $FD22
+        lda     #12
+        sta     $FD23
+        lda     #0
+        sta     $FD22
+        lda     #13
+        sta     $FD23
+        lda     #0
+        sta     $FD22
         rts
 
 ; =============================================================================
