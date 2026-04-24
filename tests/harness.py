@@ -254,6 +254,114 @@ def test_m3():
     return 0 if total_failed == 0 else 1
 
 
+# -----------------------------------------------------------------------------
+# M4 test — PT3 header parser
+# -----------------------------------------------------------------------------
+PLAYER_LOAD_PT3 = PLAYER_BASE + 0x03
+
+# Expected values extracted from Python PT3Module for each test file.
+# (version_char, features_level, tone_table, delay, num_pos, loop_pos, pat_ptr)
+M4_EXPECTED = {
+    "yerzmyey.pt3":   (0x37, 2, 1, 5, 28, 0, 0x00E6),
+    "luchibobra.pt3": (0x35, 0, 2, 4, 9,  0, 0x00D3),
+    "blobbzgame.pt3": (0x72, 1, 2, 3, 8,  2, 0x00D2),
+}
+
+
+def test_m4():
+    print("=" * 70)
+    print("M4 - PT3 Header Parser")
+    print("=" * 70)
+    assemble_player()
+
+    # Symbol lookups
+    syms = {name: find_symbol(name) for name in [
+        "pt3_base_lo", "pt3_version_char", "pt3_features_level",
+        "pt3_tone_table", "pt3_delay", "pt3_num_positions",
+        "pt3_loop_position", "pt3_patterns_ptr_lo",
+        "pt3_sample_table_lo", "pt3_ornament_table_lo",
+        "pt3_position_list_lo", "pt3_parse_error",
+    ]}
+
+    total_passed = 0
+    total_failed = 0
+    BASE = 0x8000                                # where we load PT3 in RAM
+
+    for fname, exp in M4_EXPECTED.items():
+        (ev_char, ev_fl, ev_tt, ev_del, ev_npos, ev_lpos, ev_pptr) = exp
+
+        mpu, obs = build_sim()
+        load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
+
+        # Load PT3 file at $8000
+        pt3_data = (TESTS_DIR / "pt3" / fname).read_bytes()
+        for i, b in enumerate(pt3_data):
+            mpu.memory[BASE + i] = b
+
+        # Initialize player
+        call_sub(mpu, PLAYER_INIT)
+
+        # Call player_load_pt3(A=base_hi, X=base_lo)
+        mpu.a = BASE >> 8
+        mpu.x = BASE & 0xFF
+        c = call_sub(mpu, PLAYER_LOAD_PT3)
+
+        def rd(name):
+            return mpu.memory[syms[name]]
+
+        def rd16(name):
+            return rd(name) | (mpu.memory[syms[name] + 1] << 8)
+
+        # Collect actual
+        got_base = rd16("pt3_base_lo")
+        got_ver = rd("pt3_version_char")
+        got_fl = rd("pt3_features_level")
+        got_tt = rd("pt3_tone_table")
+        got_del = rd("pt3_delay")
+        got_npos = rd("pt3_num_positions")
+        got_lpos = rd("pt3_loop_position")
+        got_pptr = rd16("pt3_patterns_ptr_lo")
+        got_sptr = rd16("pt3_sample_table_lo")
+        got_optr = rd16("pt3_ornament_table_lo")
+        got_plst = rd16("pt3_position_list_lo")
+        got_err = rd("pt3_parse_error")
+
+        # Expected absolute pointers
+        ex_pptr_abs = BASE + ev_pptr
+        ex_sptr_abs = BASE + 0x69
+        ex_optr_abs = BASE + 0xA9
+        ex_plst_abs = BASE + 0xC9
+
+        checks = [
+            ("parse_error",   got_err,  0),
+            ("base",          got_base, BASE),
+            ("version_char",  got_ver,  ev_char),
+            ("features_lvl",  got_fl,   ev_fl),
+            ("tone_table",    got_tt,   ev_tt),
+            ("delay",         got_del,  ev_del),
+            ("num_positions", got_npos, ev_npos),
+            ("loop_position", got_lpos, ev_lpos),
+            ("patterns_ptr",  got_pptr, ex_pptr_abs),
+            ("sample_table",  got_sptr, ex_sptr_abs),
+            ("ornament_tbl",  got_optr, ex_optr_abs),
+            ("position_list", got_plst, ex_plst_abs),
+        ]
+
+        failures = [(n, g, e) for (n, g, e) in checks if g != e]
+        if not failures:
+            print(f"  {fname}: PASS ({c} steps)")
+            total_passed += 1
+        else:
+            print(f"  {fname}: FAIL ({c} steps)")
+            for name, g, e in failures:
+                print(f"    {name:15s}: got=${g:04X} expected=${e:04X}")
+            total_failed += 1
+
+    print()
+    print(f"  Result: {total_passed}/{total_passed + total_failed} files passed")
+    return 0 if total_failed == 0 else 1
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
     if cmd == "m1":
@@ -262,11 +370,14 @@ if __name__ == "__main__":
         sys.exit(test_m2())
     elif cmd == "m3":
         sys.exit(test_m3())
+    elif cmd == "m4":
+        sys.exit(test_m4())
     elif cmd == "all":
         r1 = test_m1()
         r2 = test_m2()
         r3 = test_m3()
-        sys.exit(r1 | r2 | r3)
+        r4 = test_m4()
+        sys.exit(r1 | r2 | r3 | r4)
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
