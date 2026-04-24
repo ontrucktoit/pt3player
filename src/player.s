@@ -1,182 +1,67 @@
 ; =============================================================================
-; player.s - PT3 Player for Commodore Plus/4 + DigiMuz AY card
-; =============================================================================
-; Milestone M1: "Hello Tone"
-;
-; This is the simplest useful player — hardcoded to always play a single note
-; (A-4) on channel A. No pattern decode, no samples, no ornaments, no effects.
-;
-; Purpose of M1:
-;   1. Verify that the jump table is at the expected address ($3000-$3017).
-;   2. Verify that writes to shadow_ay[] propagate to hardware via DigiMuz
-;      register-select + data-write sequence.
-;   3. Verify that player_play produces deterministic output frame-by-frame
-;      (same values written every tick).
-;   4. Establish the IRQ-handler calling convention (pure JSR subroutine,
-;      no timer programming, no vector installation).
-;
-; Calling convention (per docs/ARCHITECTURE.md Q1):
-;   Host program owns Timer 1 IRQ. Host's IRQ handler does:
-;       jsr PLAYER_PLAY         ; = JSR $3006
-;   Player library never touches TED timer or IRQ vectors.
-;
-; Reference: docs/ARCHITECTURE.md, docs/REFERENCES.md,
-;            ../pt3_python_sim/README.md (14 design notes, validated 20/20 bit-exact)
+; player.s - PT3 Player M2 "Note Table Generator"
 ; =============================================================================
 
         .include "pt3_player.inc"
 
-; =============================================================================
-; CODE segment — starts at $3000
-; =============================================================================
-
         .segment "CODE"
 
-; -----------------------------------------------------------------------------
-; Jump table at $3000-$3017 (8 entries × 3 bytes each)
-; -----------------------------------------------------------------------------
-; This table MUST be the first thing in the CODE segment. Host programs
-; reference these addresses as fixed constants (see pt3_player.inc).
-;
-; Each entry is a 3-byte JMP absolute, which makes the library relocatable
-; (procedure labels can be anywhere, as long as the JMP targets at $3000+n*3
-; resolve correctly).
-; -----------------------------------------------------------------------------
+; Jump table at $3000 (9 entries × 3 bytes)
 jump_table:
-        jmp player_init              ; $3000
-        jmp player_load_pt3          ; $3003
-        jmp player_play              ; $3006
-        jmp player_stop              ; $3009
-        jmp player_rewind            ; $300C
-        jmp player_is_playing        ; $300F
-        jmp player_is_song_ended     ; $3012
-        jmp player_set_flags         ; $3015
-                                     ; $3018 — first byte of actual code
+        jmp player_init                  ; $3000
+        jmp player_load_pt3              ; $3003
+        jmp player_play                  ; $3006
+        jmp player_stop                  ; $3009
+        jmp player_rewind                ; $300C
+        jmp player_is_playing            ; $300F
+        jmp player_is_song_ended         ; $3012
+        jmp player_set_flags             ; $3015
+        jmp player_build_note_table      ; $3018 — NEW in M2
 
 ; -----------------------------------------------------------------------------
-; player_init — one-time initialization
-; -----------------------------------------------------------------------------
-; Called once by host at program start (before any other player call).
-;
-; M1 scope: just set up the shadow AY with the "A-4 on channel A" values
-; and mark player as playing. In M2+ this will build note/volume tables.
-;
-; Preserves: nothing (host must save state if needed).
-; Returns:   nothing.
-; -----------------------------------------------------------------------------
 player_init:
-        ; Zero the shadow AY buffer and state
         ldx     #13
-@clear_loop:
+@clr:
         lda     #0
         sta     shadow_ay,x
         dex
-        bpl     @clear_loop
+        bpl     @clr
 
-        ; Set up the M1 "hello tone" state:
-        ;   Channel A tone period = $03FC (A-4 in PT3 tone table 1 — "ASM-PT2")
-        ;   Actually for M1 we'll use an approximation that YAPE and real
-        ;   hardware will both produce an audible tone regardless of PAL/NTSC
-        ;   clock differences. The exact value doesn't matter in M1 — we just
-        ;   need "a tone".
-        ;
-        ; Using $0100 (= 256 dec) as tone period:
-        ;   AY tone freq = clock / (16 × period)
-        ;   Assume DigiMuz AY is clocked at ~1.77 MHz (standard ZX Spectrum
-        ;   AY clock, which DigiMuz typically uses)
-        ;   → freq = 1773400 / (16 × 256) = ~433 Hz (close to A-4 = 440 Hz)
-        ;
-        ; This is close enough to A-4 that it'll sound musical without needing
-        ; the real note table (coming in M2).
         lda     #$00
         sta     shadow_ay + AY_R0_TONE_A_LO
         lda     #$01
         sta     shadow_ay + AY_R1_TONE_A_HI
-
-        ; R7 (mixer): enable tone on ch A, disable everything else
-        ; Bit meaning: 1=disabled. So for "ch A tone only":
-        ;   bit 0 = !ToneA = 0
-        ;   bits 1-2 = !ToneB,C = 1
-        ;   bits 3-5 = !NoiseA,B,C = 1
-        ;   bits 6-7 = I/O direction = 0 (input, unused)
-        ; = %00111110 = $3E
         lda     #$3E
         sta     shadow_ay + AY_R7_MIXER
-
-        ; R8 (ch A amplitude): full volume, no envelope
-        ; Bits 0-3 = volume 0..15
-        ; Bit 4    = 0 (fixed amplitude, not envelope-controlled)
         lda     #$0F
         sta     shadow_ay + AY_R8_AMP_A
 
-        ; Mark player as playing
         lda     #1
         sta     playing_flag
-
         rts
 
-; -----------------------------------------------------------------------------
-; player_load_pt3 — M1 stub (not implemented until M4)
-; -----------------------------------------------------------------------------
-; Returns immediately without loading anything. In M4 this will parse the
-; PT3 header at the address passed in A (lo) / X (hi).
-; -----------------------------------------------------------------------------
 player_load_pt3:
         rts
 
-; -----------------------------------------------------------------------------
-; player_play — THE MAIN TICK HANDLER
-; -----------------------------------------------------------------------------
-; Called once per audio frame (50 Hz PAL or 60 Hz NTSC) by the host's IRQ
-; handler. In M1 this just writes the shadow AY to hardware — no decode,
-; no state advancement.
-;
-; Preserves: nothing (caller's IRQ handler must save/restore A,X,Y,P).
-; Returns:   nothing.
-; -----------------------------------------------------------------------------
 player_play:
-        ; If not playing, do nothing (host may JSR us even when paused)
         lda     playing_flag
         beq     @done
-
-        ; Write the 14 shadow AY registers to hardware via DigiMuz.
-        ; We write R13 down to R0; R13 is written LAST so any envelope restart
-        ; (which a R13 write triggers on AY) happens at the END of the tick,
-        ; which matches Python simulator's frame-ordering behavior.
-        ;
-        ; Actually — per design note #13 and VTII behavior, we should ONLY
-        ; write R13 when env_shape changed this tick (r13_needs_write flag).
-        ; In M1 we don't care (no envelope), so write all 14.
-        ;
-        ; Total cycles for this loop: 13 iterations × ~14 cycles = ~180 cycles.
-        ; Well within the 7000-cycle IRQ budget.
         ldx     #13
-@write_loop:
-        stx     DIGIMUZ_REG_SEL      ; latch register select
+@wloop:
+        stx     DIGIMUZ_REG_SEL
         lda     shadow_ay,x
-        sta     DIGIMUZ_DATA_W       ; write value
+        sta     DIGIMUZ_DATA_W
         dex
-        bpl     @write_loop
-
+        bpl     @wloop
 @done:
         rts
 
-; -----------------------------------------------------------------------------
-; player_stop — mute + halt (preserves position)
-; -----------------------------------------------------------------------------
-; Zero the shadow AY amplitudes (R8, R9, R10) so AY goes silent, and clear
-; playing_flag. Position/pattern state is NOT reset; call player_rewind for
-; full reset.
-; -----------------------------------------------------------------------------
 player_stop:
         lda     #0
         sta     shadow_ay + AY_R8_AMP_A
         sta     shadow_ay + AY_R9_AMP_B
         sta     shadow_ay + AY_R10_AMP_C
         sta     playing_flag
-
-        ; Write out now so hardware actually goes silent this tick.
-        ; Only need to write R8, R9, R10.
         ldx     #AY_R8_AMP_A
         stx     DIGIMUZ_REG_SEL
         lda     #0
@@ -189,79 +74,333 @@ player_stop:
         sta     DIGIMUZ_DATA_W
         rts
 
-; -----------------------------------------------------------------------------
-; player_rewind — full reset
-; -----------------------------------------------------------------------------
-; M1 scope: just calls player_stop (no song loaded yet, nothing to rewind).
-; M4+ will reset current_position, current_line, etc.
-; -----------------------------------------------------------------------------
 player_rewind:
         jsr     player_stop
         rts
 
-; -----------------------------------------------------------------------------
-; player_is_playing — returns A=1 if playing, A=0 if stopped
-; -----------------------------------------------------------------------------
 player_is_playing:
         lda     playing_flag
         rts
 
-; -----------------------------------------------------------------------------
-; player_is_song_ended — returns A=1 if song ended this tick
-; -----------------------------------------------------------------------------
-; M1 stub: always returns 0 (no song to end).
-; -----------------------------------------------------------------------------
 player_is_song_ended:
         lda     #0
         rts
 
-; -----------------------------------------------------------------------------
-; player_set_flags — A = flag bits
-; -----------------------------------------------------------------------------
-; Handles the mutual-exclusion logic for track loop and playlist loop:
-;   If bit0 (loop_track) is set, bit1 (loop_playlist) is force-cleared.
-;   If caller tries to set bit1 while loop_track is currently set, bit1 is
-;   ignored (silently discarded).
-;
-; Input: A = desired flag bits
-;        bit 0 = loop_track
-;        bit 1 = loop_playlist
-; -----------------------------------------------------------------------------
 player_set_flags:
-        pha                           ; save incoming value
-        and     #FLAG_LOOP_TRACK      ; isolate loop_track bit
-        beq     @track_off            ; branch if loop_track=0
-
-        ; loop_track=1 → force loop_playlist=0
+        pha
+        and     #FLAG_LOOP_TRACK
+        beq     @track_off
         lda     #FLAG_LOOP_TRACK
         sta     flags_byte
-        pla                           ; discard incoming (we used our own)
+        pla
         rts
-
 @track_off:
-        ; loop_track=0 → accept caller's loop_playlist as-is
         pla
         and     #FLAG_LOOP_TRACK | FLAG_LOOP_PLAYLIST
         sta     flags_byte
         rts
 
 ; =============================================================================
-; BSS segment — RAM state (zeroed at load time by ld65 fillval, but we also
-; zero it explicitly in player_init for safety on reruns)
+; player_build_note_table(A = table_idx, X = version_is_old)
 ; =============================================================================
+player_build_note_table:
+        sta     nt_arg_table
+        stx     nt_arg_version
+
+        jsr     depack_t_pack
+
+        lda     nt_arg_table
+        asl     a
+        ora     nt_arg_version
+        sta     nt_sel_tmp
+        asl     a
+        clc
+        adc     nt_sel_tmp
+        tay
+
+        lda     NT_SELECTOR_RAW,y
+        sta     nt_raw_byte
+        lda     NT_SELECTOR_RAW+1,y
+        sta     nt_corr_ptr_lo
+        lda     NT_SELECTOR_RAW+2,y
+        sta     nt_corr_ptr_hi
+
+        lda     nt_raw_byte
+        and     #1
+        sta     nt_truncate
+
+        lda     nt_raw_byte
+        lsr     a
+        sta     nt_t1_byte_off
+
+        jsr     generate_notes
+
+        lda     nt_raw_byte
+        cmp     #1
+        bne     @no_special
+        lda     #$FD
+        sta     note_table + 46
+@no_special:
+
+        jsr     apply_corrections
+        rts
+
+depack_t_pack:
+        ldx     #97
+        lda     #0
+@clr:
+        sta     t1_buf,x
+        dex
+        bpl     @clr
+
+        lda     #0
+        sta     dp_hl_lo
+        sta     dp_hl_hi
+
+        ldy     #0
+
+        lda     #96
+        sta     dp_write_idx
+
+@loop:
+        cpy     #T_PACK_LEN
+        bcs     @done
+
+        lda     T_PACK_DATA,y
+        iny
+
+        cmp     #30
+        bcc     @abs
+
+        asl     a
+        pha
+        lda     #0
+        adc     #0
+        sta     dp_temp
+        pla
+        clc
+        adc     dp_hl_lo
+        sta     dp_hl_lo
+        lda     dp_hl_hi
+        adc     dp_temp
+        sta     dp_hl_hi
+        jmp     @store
+
+@abs:
+        sta     dp_hl_hi
+        cpy     #T_PACK_LEN
+        bcs     @done
+        lda     T_PACK_DATA,y
+        iny
+        sta     dp_hl_lo
+
+@store:
+        ldx     dp_write_idx
+        lda     dp_hl_lo
+        sta     t1_buf,x
+        inx
+        lda     dp_hl_hi
+        sta     t1_buf,x
+
+        lda     dp_write_idx
+        sec
+        sbc     #2
+        sta     dp_write_idx
+
+        lda     dp_hl_lo
+        cmp     #$F0
+        beq     @done
+
+        lda     dp_write_idx
+        bmi     @done
+
+        jmp     @loop
+
+@done:
+        rts
+
+generate_notes:
+        lda     #0
+        sta     gn_note_i
+
+@note_loop:
+        lda     gn_note_i
+        asl     a
+        clc
+        adc     nt_t1_byte_off
+        tax
+        lda     t1_buf,x
+        sta     gn_bc_lo
+        inx
+        lda     t1_buf,x
+        sta     gn_bc_hi
+
+        lda     #0
+        sta     gn_octave
+
+@octave_loop:
+        lsr     gn_bc_hi
+        ror     gn_bc_lo
+
+        lda     nt_truncate
+        beq     @no_trunc
+        clc
+@no_trunc:
+        lda     gn_bc_lo
+        adc     #0
+        sta     gn_tmp_lo
+        lda     gn_bc_hi
+        adc     #0
+        sta     gn_tmp_hi
+
+        lda     gn_octave
+        asl     a
+        asl     a
+        asl     a
+        sta     gn_dest_tmp
+        asl     a
+        clc
+        adc     gn_dest_tmp
+        sta     gn_dest_tmp
+        lda     gn_note_i
+        asl     a
+        clc
+        adc     gn_dest_tmp
+        tax
+
+        lda     gn_tmp_lo
+        sta     note_table,x
+        inx
+        lda     gn_tmp_hi
+        sta     note_table,x
+
+        inc     gn_octave
+        lda     gn_octave
+        cmp     #8
+        bcc     @octave_loop
+
+        inc     gn_note_i
+        lda     gn_note_i
+        cmp     #12
+        bcc     @note_loop
+
+        rts
+
+apply_corrections:
+        lda     nt_corr_ptr_lo
+        sta     ZP_TEMP_LO
+        lda     nt_corr_ptr_hi
+        sta     ZP_TEMP_HI
+
+        ldy     #0
+@loop:
+        lda     (ZP_TEMP_LO),y
+        beq     @done
+
+        pha
+        lsr     a
+        asl     a
+        tax
+        pla
+        and     #1
+        beq     @add
+
+        lda     note_table,x
+        sec
+        sbc     #1
+        sta     note_table,x
+        jmp     @next
+@add:
+        lda     note_table,x
+        clc
+        adc     #1
+        sta     note_table,x
+@next:
+        iny
+        bne     @loop
+@done:
+        rts
+
+        .segment "RODATA"
+
+T_PACK_DATA:
+        .byte   $0D, $D8
+        .byte   $69, $70, $76, $7D, $85, $8D, $95, $9D, $A8, $B1, $BB
+        .byte   $0C, $DA
+        .byte   $62, $68, $6D, $75, $7B, $83, $8A, $92, $9C, $A4, $AF, $B8
+        .byte   $0E, $08
+        .byte   $6A, $72, $78, $7E, $86, $90, $96, $A0, $AA, $B4, $BE
+        .byte   $0F, $C0
+        .byte   $78, $88, $80, $90, $98, $A0, $B0, $A8, $E0, $B0, $E8
+
+T_PACK_LEN = * - T_PACK_DATA
+
+TCOLD_0_LIST:
+        .byte   $01, $05, $09, $0B, $0D, $0F, $13, $15, $19, $25, $3D, 0
+TCOLD_1_LIST:
+        .byte   $5D, 0
+TCOLD_2_LIST:
+        .byte   $31, $37, $4D, $53, $5F, $71, $82, $8C, $9C, $9E, $A0
+        .byte   $A6, $A8, $AA, $AC, $AE, $AE, 0
+TCOLD_3_LIST:
+        .byte   $1F, $23, $25, $29, $2D, $2F, $33, $BF, 0
+TCNEW_0_LIST:
+        .byte   $1D, $21, $23, $27, $2B, $2D, $31, $55, $BD, $BF, 0
+TCNEW_2_LIST:
+        .byte   $1B, $21, $25, $29, $2B, $3B, $4D, $5F, $BB, $BD, $BF, 0
+TCNEW_3_CHAIN:
+        .byte   $57
+TCOLD_3_CHAINED:
+        .byte   $1F, $23, $25, $29, $2D, $2F, $33, $BF, 0
+
+NT_SELECTOR_RAW:
+        .byte   100
+        .word   TCNEW_0_LIST
+        .byte   101
+        .word   TCOLD_0_LIST
+        .byte   1
+        .word   TCOLD_1_LIST
+        .byte   1
+        .word   TCOLD_1_LIST
+        .byte   148
+        .word   TCNEW_2_LIST
+        .byte   48
+        .word   TCOLD_2_LIST
+        .byte   96
+        .word   TCNEW_3_CHAIN
+        .byte   96
+        .word   TCOLD_3_LIST
 
         .segment "BSS"
 
-; The shadow AY buffer — player logic writes here, then write_loop at the end
-; of player_play sends all 14 registers to hardware.
 shadow_ay:              .res 14
+playing_flag:           .res 1
+flags_byte:             .res 1
 
-; Player state flags
-playing_flag:           .res 1        ; 0=stopped, 1=playing
-flags_byte:             .res 1        ; bit0=loop_track, bit1=loop_playlist
+nt_arg_table:           .res 1
+nt_arg_version:         .res 1
+nt_raw_byte:            .res 1
+nt_corr_ptr_lo:         .res 1
+nt_corr_ptr_hi:         .res 1
+nt_truncate:            .res 1
+nt_t1_byte_off:         .res 1
+nt_sel_tmp:             .res 1
 
-; M2+ will add more state here (channel state, position, etc.)
+dp_hl_lo:               .res 1
+dp_hl_hi:               .res 1
+dp_write_idx:           .res 1
+dp_temp:                .res 1
 
-; =============================================================================
-; End of player.s
-; =============================================================================
+gn_note_i:              .res 1
+gn_octave:              .res 1
+gn_bc_lo:               .res 1
+gn_bc_hi:               .res 1
+gn_tmp_lo:              .res 1
+gn_tmp_hi:              .res 1
+gn_dest_tmp:            .res 1
+
+t1_buf:                 .res 98
+note_table:             .res 192
+
+.exportzp note_table_addr_hint := $FF
+.export note_table
