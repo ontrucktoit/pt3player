@@ -1,59 +1,49 @@
 ; testtone.s - Standalone Plus/4 test tone program.
 ;
-; Load address: $1001 (standard Plus/4 BASIC start).
-; Plus/4 file format: first 2 bytes = load address (little-endian), then data.
-; ca65/ld65 emits the load address automatically via .segment linked to $1001,
-; but we need the BASIC stub format correctly.
-;
+; Load address: $1001 (Plus/4 BASIC start).
 ; Layout:
-;   $1001-$1002  link to next line ($1010 or any end-of-prog marker)
-;   $1003-$1004  line number 10 = $000A
-;   $1005        BASIC token $9E = SYS
-;   $1006-$1009  "4109" ASCII ($34 $31 $30 $39 — address $100D rounded up? No, $100D in decimal is 4109)
-;   $100A        $00 end of line
-;   $100B-$100C  $00 $00 = end of program
-;   $100D        assembly entry point
+;   $1001-$100C  BASIC stub "10 SYS 4109"
+;                ($1001-$1002 link ptr, $1003-$1004 line#, $1005 SYS token,
+;                 $1006-$1009 "4109", $100A $00, $100B-$100C $00 $00)
+;   $100D        assembly entry point (=4109 decimal, SYS target)
+;   ...          startup: silence TED, call player_init + test_tone, loop
+;   $3000-$3FFF  Player binary
 ;
-; Our startup: call player_init at $3000, then player_play_test_tone at $3027,
-; then infinite loop.
+; v2 fix: SYS target was $100D but CODE was at $1010 in v1 — three $00 BRK
+; bytes at $100D crashed immediately. Fixed by putting CODE at $100D directly
+; (HEADER size = $000C in cfg).
+;
+; v2 fix: no SEI — leaving IRQ active so Plus/4 DRAM refresh + keyboard scan
+; continue to work. DigiMuz tone gets set once and latches; no IRQ-driven
+; update needed for a constant tone smoke test.
 
         .segment "BASIC"
-        ; Link to next line = $1010 (doesn't really matter; basic doesn't chain here)
-        .word   next_line
-        .word   10                       ; line number
+        .word   next_line                ; next-line link = $100B
+        .word   10                       ; line number 10
         .byte   $9E                      ; SYS token
-        .byte   "4109"                   ; ASCII address = $100D
+        .byte   "4109"                   ; target address $100D
         .byte   $00                      ; end of line
 next_line:
-        .word   $0000                    ; end of program (null link)
-
-        ; BASIC stub is 13 bytes ($1001..$100D-1). Assembly starts at $1010.
-        ; ld65 will auto-pad the HEADER segment to fill 15 bytes since we said
-        ; size = $000F, so gap $100E-$100F is filled with $00.
+        .word   $0000                    ; end of program
 
         .segment "CODE"
 
-; Startup code at $1010
+; Startup code at $100D (= 4109 decimal).
 start:
-        sei                              ; disable IRQ during setup
-
-        ; Silence TED sound before we drive DigiMuz, to keep Plus/4's
-        ; internal sound from fighting with the AY output.
+        ; Silence TED sound (FF11 low volume bits, FF12 sound enable bits)
+        ; so Plus/4 internal square wave doesn't overlap DigiMuz output.
         lda     #0
-        sta     $FF11                    ; TED sound control (volume + mute)
+        sta     $FF11
         sta     $FF12
 
-        ; Player doesn't strictly need init for test tone, but call it
-        ; to establish a clean state. player_init = $3000.
+        ; Establish clean player state.
         jsr     $3000                    ; PLAYER_INIT
 
-        ; Fire the smoke test tone.
+        ; Fire the smoke test tone — sets all 14 AY registers for a
+        ; pure tone on ch A, period $0200, volume 15.
         jsr     $3027                    ; PLAYER_PLAY_TEST_TONE
 
-        ; Hang forever — AY keeps playing the latched tone.
-        ; Infinite loop with NOPs so CPU doesn't hammer the bus too hard.
-@loop:
-        nop
-        nop
-        nop
-        jmp     @loop
+        ; Return to BASIC. AY latches stay set — tone continues playing
+        ; until reset. User hears steady tone, can press RUN/STOP or do
+        ; anything else; tone continues until power off or explicit reset.
+        rts
