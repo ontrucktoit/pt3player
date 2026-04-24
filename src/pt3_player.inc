@@ -51,6 +51,8 @@ PLAYER_SET_FLAGS    = PLAYER_BASE + $15   ; A=flag bits (bit0=loop_track, bit1=l
 PLAYER_BUILD_NOTE_TABLE = PLAYER_BASE + $18
 PLAYER_BUILD_VOLUME_TABLE = PLAYER_BASE + $1B
 PLAYER_DECODE_ROW   = PLAYER_BASE + $1E
+PLAYER_INIT_PATTERN = PLAYER_BASE + $21
+PLAYER_DECODE_ALL   = PLAYER_BASE + $24
 
 ; -----------------------------------------------------------------------------
 ; Zero page allocation ($D8-$E8, 17 bytes safe per SVS Ultimate Map v2.2)

@@ -506,6 +506,115 @@ def test_m5a():
     return 0 if files_fail == 0 else 1
 
 
+# -----------------------------------------------------------------------------
+# M5b test — skip + multi-channel driver
+# -----------------------------------------------------------------------------
+PLAYER_INIT_PATTERN = PLAYER_BASE + 0x21
+PLAYER_DECODE_ALL = PLAYER_BASE + 0x24
+
+
+def test_m5b():
+    print("=" * 70)
+    print("M5b - Skip + Multi-channel Driver")
+    print("=" * 70)
+    assemble_player()
+
+    syms = {name: find_symbol(name) for name in [
+        "row_out_ch_a", "row_out_ch_b", "row_out_ch_c",
+    ]}
+
+    total_ticks_pass = 0
+    total_ticks_fail = 0
+    files_pass = 0
+    files_fail = 0
+    BASE = 0x8000
+
+    for fname in ['luchibobra.pt3', 'blobbzgame.pt3', 'yerzmyey.pt3']:
+        ref_path = TESTS_DIR / f"m5b_ref_{fname.replace('.pt3','')}.bin"
+        ref_data = ref_path.read_bytes()
+        assert ref_data[:4] == b'M5B\x01', f"Bad magic in {ref_path}"
+        num_patterns = ref_data[4] | (ref_data[5] << 8)
+
+        mpu, obs = build_sim()
+        load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
+        pt3 = (TESTS_DIR / "pt3" / fname).read_bytes()
+        for i, b in enumerate(pt3):
+            mpu.memory[BASE + i] = b
+        call_sub(mpu, PLAYER_INIT)
+        mpu.a = BASE >> 8
+        mpu.x = BASE & 0xFF
+        call_sub(mpu, PLAYER_LOAD_PT3)
+
+        file_ticks_pass = 0
+        file_ticks_fail = 0
+        first_fail = None
+
+        idx = 6
+        for p_i in range(num_patterns):
+            pat_num = ref_data[idx]
+            num_ticks = ref_data[idx + 1] | (ref_data[idx + 2] << 8)
+            idx += 3
+
+            # Init pattern
+            mpu.a = pat_num
+            call_sub(mpu, PLAYER_INIT_PATTERN)
+
+            for tick_i in range(num_ticks):
+                expected_tick = ref_data[idx:idx + 36]
+                expected_active = ref_data[idx + 36]
+                idx += 37
+
+                call_sub(mpu, PLAYER_DECODE_ALL)
+                actual_active = mpu.a
+                # Read all 3 row_outs
+                actual_bytes = bytearray()
+                for ch_name in ('a', 'b', 'c'):
+                    addr = syms[f'row_out_ch_{ch_name}']
+                    for i in range(12):
+                        actual_bytes.append(mpu.memory[addr + i])
+                actual_tick = bytes(actual_bytes)
+
+                row_match = actual_tick == expected_tick
+                active_match = actual_active == expected_active
+
+                if row_match and active_match:
+                    file_ticks_pass += 1
+                else:
+                    file_ticks_fail += 1
+                    if first_fail is None:
+                        diffs = []
+                        for ch_i in range(3):
+                            for field_i in range(12):
+                                i = ch_i * 12 + field_i
+                                if actual_tick[i] != expected_tick[i]:
+                                    diffs.append(
+                                        f"ch{ch_i} {ROW_FIELD_NAMES[field_i]}: "
+                                        f"got ${actual_tick[i]:02X} exp ${expected_tick[i]:02X}"
+                                    )
+                        if not active_match:
+                            diffs.append(f"active_count: got {actual_active} exp {expected_active}")
+                        first_fail = {'pat': pat_num, 'tick': tick_i, 'diffs': diffs}
+
+        if file_ticks_fail == 0:
+            print(f"  {fname}: PASS ({file_ticks_pass} ticks)")
+            files_pass += 1
+        else:
+            print(f"  {fname}: FAIL ({file_ticks_pass} passed, {file_ticks_fail} failed)")
+            if first_fail:
+                info = first_fail
+                print(f"    first failure: pat {info['pat']} tick {info['tick']}")
+                for d in info['diffs'][:10]:
+                    print(f"      {d}")
+            files_fail += 1
+        total_ticks_pass += file_ticks_pass
+        total_ticks_fail += file_ticks_fail
+
+    print()
+    print(f"  Result: {files_pass}/{files_pass + files_fail} files; "
+          f"{total_ticks_pass}/{total_ticks_pass + total_ticks_fail} ticks bit-exact")
+    return 0 if files_fail == 0 else 1
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
     if cmd == "m1":
@@ -518,13 +627,16 @@ if __name__ == "__main__":
         sys.exit(test_m4())
     elif cmd == "m5a":
         sys.exit(test_m5a())
+    elif cmd == "m5b":
+        sys.exit(test_m5b())
     elif cmd == "all":
         r1 = test_m1()
         r2 = test_m2()
         r3 = test_m3()
         r4 = test_m4()
         r5 = test_m5a()
-        sys.exit(r1 | r2 | r3 | r4 | r5)
+        r6 = test_m5b()
+        sys.exit(r1 | r2 | r3 | r4 | r5 | r6)
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
