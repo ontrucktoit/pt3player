@@ -1717,11 +1717,22 @@ player_init_song:
         ; Divide by 3 — but we don't have /3. M5b expects pattern_num (not *3).
         ; Python: `pat_num = positions[pos_idx] // 3`. We do same.
         jsr     div_by_3
-        jsr     player_init_pattern       ; A = pattern_num
-        ; Now compute actual pattern length via pre-pass port of VTII trfuncs.pas
-        ; _compute_pattern_length. Destructive on stream/skip_counter/end_flag;
-        ; m6_compute_pat_len saves & restores these around the pre-pass.
-        jsr     m6_compute_pat_len
+        sta     pat_len_caller_save         ; remember first pat_num across precompute
+                                            ; (precompute uses pat_len_tmp_pat_num internally)
+
+        ; One-shot pre-fill of pat_len_table for every pattern referenced
+        ; in the position list. After this runs, pattern advance during
+        ; playback is just LDA pat_len_table,X — no per-boundary IRQ overrun.
+        jsr     m6_precompute_pat_lens
+
+        ; precompute clobbers ZP_STREAM (player_init_pattern was called many
+        ; times inside it). Re-init the stream for the actual starting pattern.
+        lda     pat_len_caller_save
+        jsr     player_init_pattern         ; A = first pat_num
+
+        ; Set pb_current_pat_len from the pre-computed table.
+        lda     pat_len_caller_save
+        jsr     m6_get_pat_len
         sta     pb_current_pat_len
         rts
 
@@ -2081,9 +2092,13 @@ m6_advance_position:
         ldy     pb_position_idx
         lda     (M5_PTR_LO),y               ; pat_num * 3
         jsr     div_by_3
-        jsr     player_init_pattern
-        ; Recompute pattern length for new pattern
-        jsr     m6_compute_pat_len
+        sta     pat_len_tmp_pat_num         ; save pat_num across init_pattern
+        jsr     player_init_pattern         ; clobbers A
+        ; Look up pre-computed pattern length (filled at player_init_song).
+        ; Replaces the per-boundary m6_compute_pat_len call that caused
+        ; ~64000-cycle IRQ overrun = audible hiccup at every pattern switch.
+        lda     pat_len_tmp_pat_num
+        jsr     m6_get_pat_len
         sta     pb_current_pat_len
         ; Reset state
         lda     #0
@@ -2091,6 +2106,92 @@ m6_advance_position:
         sta     pb_noise_period
         ; player_init_pattern already cleared end_flag_* and reset skip_counter_*
         rts
+; =============================================================================
+; m6_get_pat_len — return pat_len_table[A] in A.
+;
+; Assumes m6_precompute_pat_lens has already been called (during init_song).
+; Out-of-range pat_num (>= PAT_LEN_TABLE_SIZE) returns 64 as a safety default
+; — would only happen on corrupt/exotic files.
+;
+; In:  A = pat_num
+; Out: A = pattern length (rows)
+; Clobbers: X
+; -----------------------------------------------------------------------------
+m6_get_pat_len:
+        cmp     #PAT_LEN_TABLE_SIZE
+        bcc     @ok
+        lda     #64
+        rts
+@ok:
+        tax
+        lda     pat_len_table,x
+        rts
+
+; =============================================================================
+; m6_precompute_pat_lens — fill pat_len_table by walking the position list.
+;
+; For each position, divides positions[i] by 3 to get pat_num. If we have not
+; yet computed that pat_num's length (pat_len_table[pat_num] == 0 acts as
+; the "not yet computed" marker — pre-zeroed by m6_clear_state), calls
+; player_init_pattern + m6_compute_pat_len and stores the result.
+;
+; Marker choice: 0 means "unknown". Real pattern lengths are >= 1 (an empty
+; pattern has at least one row terminator), so 0 is a safe sentinel and
+; saves us a separate bit-array. m6_clear_state already zeros the BSS
+; region containing pat_len_table at song init.
+;
+; Caller responsibility:
+;   - player_init_song calls this AFTER M4 metadata is loaded and BEFORE
+;     entering the playback loop.
+;   - After this returns, caller must call player_init_pattern again on
+;     the actual starting pattern, because m6_compute_pat_len's save/restore
+;     does NOT undo the player_init_pattern stream rewrites between
+;     iterations of this loop's main pass.
+;
+; Clobbers: A, X, Y, M5_PTR, dec_*, all compat_save_*, pat_len_tmp_pat_num.
+; -----------------------------------------------------------------------------
+m6_precompute_pat_lens:
+        ; pat_len_table itself is pre-zeroed by m6_clear_state (called
+        ; from player_init_song before us). Use 0 as 'unknown' marker.
+        lda     #0
+        sta     pat_len_walk_pos
+@pos_loop:
+        lda     pat_len_walk_pos
+        cmp     pt3_num_positions
+        bcs     @done
+
+        ; Read positions[walk_pos]
+        lda     pt3_position_list_lo
+        sta     M5_PTR_LO
+        lda     pt3_position_list_hi
+        sta     M5_PTR_HI
+        ldy     pat_len_walk_pos
+        lda     (M5_PTR_LO),y            ; pat_num * 3
+        jsr     div_by_3                 ; A = pat_num
+        sta     pat_len_tmp_pat_num
+
+        ; Bounds check (skip if >= 64)
+        cmp     #PAT_LEN_TABLE_SIZE
+        bcs     @next_pos
+
+        ; Already computed? table[pat_num] != 0 means yes.
+        tax
+        lda     pat_len_table,x
+        bne     @next_pos
+
+        ; Compute. player_init_pattern needs A = pat_num.
+        lda     pat_len_tmp_pat_num
+        jsr     player_init_pattern
+        jsr     m6_compute_pat_len       ; A = length
+        ldx     pat_len_tmp_pat_num
+        sta     pat_len_table,x
+
+@next_pos:
+        inc     pat_len_walk_pos
+        jmp     @pos_loop
+@done:
+        rts
+
 ; =============================================================================
 ; m6_compute_pat_len — port of Python _compute_pattern_length (VTII trfuncs.pas
 ; lines 2284-2312). Returns A = pattern length (number of rows).
@@ -3687,6 +3788,29 @@ compat_save_nn_skip:    .res 3       ; ch_nn_skip_[abc]
 compat_save_skip_ctr:   .res 3       ; ch_skip_counter_[abc]
 compat_save_end_flag:   .res 3       ; ch_end_flag_[abc]
 compat_row_count:       .res 1       ; pattern length counter during pre-pass
+
+; ------------------------------------------------------------------------
+; Pre-computed pattern lengths (eliminates per-pattern-boundary IRQ overrun).
+;
+; Problem: m6_compute_pat_len takes ~15000 6502 steps (~64000 cycles) per
+; call. At every pattern boundary it ran inside player_tick from
+; m6_advance_position. That single IRQ ran ~2x over the 35795-cycle
+; 50 Hz budget on Plus/4 NTSC, audible as periodic 'hiccup' at each
+; pattern boundary (every ~5 seconds for a typical 64-row pattern at
+; speed=4..6 ticks/row).
+;
+; Fix: at player_init_song time (one-shot), walk the position list once
+; and pre-compute every unique pattern's length into pat_len_table.
+; m6_advance_position then becomes a single LDA pat_len_table,X.
+;
+; Layout: pat_len_table[pat_num] = row count; pat_num is 0..63.
+; Real PT3 corpus tops out around max_pat_num=39, so 64 slots is plenty.
+; ------------------------------------------------------------------------
+PAT_LEN_TABLE_SIZE = 64
+pat_len_table:          .res PAT_LEN_TABLE_SIZE
+pat_len_tmp_pat_num:    .res 1                   ; scratch INSIDE m6_precompute_pat_lens
+pat_len_walk_pos:       .res 1                   ; position-list walker for precompute
+pat_len_caller_save:    .res 1                   ; for callers of m6_precompute who need to remember a pat_num across the call
 
 ch_nn_skip_a:           .res 1
 ch_nn_skip_b:           .res 1
