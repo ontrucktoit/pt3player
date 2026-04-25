@@ -3282,7 +3282,10 @@ m6_compute_channel:
 
 ; ----- vibrato muted branch -----
 @vibrato_muted_branch:
-        ; amp=0, tone unchanged. Run ton_slide + vibrato countdowns. Don't advance.
+        ; amp=0, tone unchanged. Run ton_slide + vibrato countdowns. Then advance
+        ; sample/ornament — if the vibrato countdown just toggled SoundEnabled
+        ; back to True, Python DOES advance this tick (m6_advance_sample_orn
+        ; re-reads the flags and gates itself on sound_enabled=1).
         ldx     m6_tmp_ch_idx
         txa
         clc
@@ -3292,6 +3295,7 @@ m6_compute_channel:
         sta     shadow_ay,y
         jsr     m6_run_ton_slide_countdown
         jsr     m6_run_vibrato_countdown
+        jsr     m6_advance_sample_orn
         rts
 
 ; -----------------------------------------------------------------------------
@@ -3900,6 +3904,12 @@ m6_decoded:             .res 3   ; per-channel decoded flag (used in decode loop
 .export ch_cur_ton_slide_a_lo
 .export ch_cur_ton_slide_a_hi
 .export ch_amp_slide_b
+.export ch_current_onoff_b
+.export ch_offon_delay_b
+.export ch_onoff_delay_b
+.export ch_current_onoff_c
+.export ch_offon_delay_c
+.export ch_onoff_delay_c
 .export ch_amp_slide_c
 .export ch_ornament_num_b
 .export ch_ornament_num_c
