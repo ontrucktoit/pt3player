@@ -4,11 +4,33 @@ PT3 Per-Tick Simulator -> PSG stream generator.
 
 This is the second half of the PT3 specification (the first half being
 the pattern/sample/ornament parser). It simulates what the player does
-PER TICK (50Hz), computing the 14 AY registers and emitting a PSG file.
+PER TICK (50 Hz), computing the 14 AY registers and emitting a PSG file.
 
 This should match AY_Emul / Vortex Tracker II's PSG export exactly.
 Gaps between our output and theirs tell us exactly where our bit-level
 interpretation is wrong.
+
+ATTRIBUTION
+-----------
+The pattern-decode and per-tick playback logic in this file is a Python
+port of Vortex Tracker II's `trfuncs.pas`:
+
+    © 2000–2009 Sergey Bulba
+    © 2017–2019 Ivan Pirog (from VTII version 2.0)
+
+Inline comments throughout this file cite specific `trfuncs.pas` line
+numbers for non-obvious behaviors (envelope handling, sample/ornament
+position semantics, effect dispatch, end-of-pattern detection, etc.).
+
+Source distribution: http://bulba.untergrund.net/
+Public mirror of the exact `trfuncs.pas` we ported from:
+    https://github.com/z00m128/vortextracker25/blob/main/trfuncs.pas
+
+This Python port is part of the PT3 player project for Commodore Plus/4
++ DigiMuz at https://github.com/ontrucktoit/pt3player. The port itself
+is released under MIT (see LICENSE at the repo root); the original
+playback engine is Bulba's / Pirog's work. See docs/THIRD_PARTY_NOTICES.md
+for the full per-file attribution.
 
 Model:
   - 50 Hz master tick

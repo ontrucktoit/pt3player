@@ -7,6 +7,28 @@ that reads PT3 pattern streams and produces Vortex Tracker II compatible TXT
 output. The goal is to serve as the reference specification for implementing
 a new native 6502 player.
 
+ATTRIBUTION
+-----------
+Although this file was written from scratch (i.e. not by direct port of
+any external Pascal/asm source), the pattern-stream opcode semantics it
+implements were learned by reading and cross-checking against Vortex
+Tracker II's `trfuncs.pas`:
+
+    © 2000–2009 Sergey Bulba
+    © 2017–2019 Ivan Pirog
+
+Several inline comments cite specific opcode behaviors as documented or
+implemented in `trfuncs.pas`. Where our decoder's semantics match VTII's
+(which is everywhere we have validated — see the 19/19 corpus regression),
+that match is by intent: VTII is the reference implementation we target.
+
+Source distribution: http://bulba.untergrund.net/
+Public mirror: https://github.com/z00m128/vortextracker25/blob/main/trfuncs.pas
+
+This file is released under MIT as part of the project at
+https://github.com/ontrucktoit/pt3player. See LICENSE at the repo root
+and docs/THIRD_PARTY_NOTICES.md for full attribution.
+
 Mechanics of PT3 pattern playback (verified against luchibobra.pt3 + yerzmyey.pt3):
 
   Each pattern has 3 channels (A, B, C). Each channel is an independent byte

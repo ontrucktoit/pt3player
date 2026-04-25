@@ -1,0 +1,51 @@
+MIT License
+
+Copyright (c) 2025-2026 Kris (project owner) and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+----------------------------------------------------------------------------
+
+THIRD-PARTY ATTRIBUTION
+
+This project ports and adapts algorithms from the Vortex Tracker II (VTII)
+project family, originally written for ZX Spectrum. The MIT license above
+covers the original code in this repository (the CA65 6502 implementation,
+the Python reference simulator wrapper code, the test harness, build tools,
+and documentation). Portions derived from VTII source code remain governed
+by their original authors' release terms — see THIRD_PARTY_NOTICES.md for
+the complete inventory and attribution.
+
+In short, the third-party material is:
+
+  - Pattern decode and playback logic (trfuncs.pas)
+      © 2000–2009 Sergey Bulba
+      © 2017–2019 Ivan Pirog
+      Released as part of Vortex Tracker II source distribution at
+      bulba.untergrund.net and on GitHub (z00m128/vortextracker25).
+
+  - Note frequency table generator (NoteTableCreator)
+  - Volume table generator (VolTableCreator)
+      Originally written by Ivan Roshin for the Z80 player VTII10 r7,
+      © 2004–2007 Sergey Bulba.
+      Released as part of the VTII Z80 player source.
+
+We are deeply grateful to these authors. Their decades of work on the
+PT3 format — and their decision to release the source publicly — are
+what made this project possible.

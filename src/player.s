@@ -1,5 +1,47 @@
 ; =============================================================================
-; player.s - PT3 Player M2+M3+M4+M5a+M5b+M6: +Full playback engine
+; player.s - PT3 Player for Commodore Plus/4 + DigiMuz AY-3-8910
+; =============================================================================
+;
+; Native 6502 (CA65) implementation, milestones M1..M6 + R13 envelope fix
+; + pattern-length precompute fix. Runs in Plus/4 RAM at PLAYER_BASE
+; (default $3000) with a public jump table at the base address.
+;
+; Bit-exact compatible with Vortex Tracker II reference output (verified
+; on the 17-file corpus regression in tests/pt3_corpus/).
+;
+; LICENSE
+; -------
+; This file is released under the MIT license — see LICENSE at the
+; repository root for the full text.
+;
+; THIRD-PARTY ATTRIBUTION
+; -----------------------
+; Several modules in this player are 6502 ports of algorithms originally
+; written for the ZX Spectrum:
+;
+;   M2 (player_build_note_table) and M3 (player_build_volume_table):
+;     Port of Ivan Roshin's NoteTableCreator and VolTableCreator from
+;     Sergey Bulba's VTII10 r7 Z80 player (©2004-2007 S.V.Bulba).
+;     Per Bulba's release notes: "Ivan Roshin for tone and volume
+;     tables generators". Ported via the Python intermediate
+;     pt3_tables.py.
+;
+;   M5a (player_decode_row), M5b (player_decode_row_all), M6 (player_tick,
+;   m6_compute_pat_len, m6_apply_row_*, etc.):
+;     Indirect port of Vortex Tracker II's trfuncs.pas
+;     (©2000-2009 S.V.Bulba, ©2017-2019 Ivan Pirog) via our Python
+;     reference simulator (tools/pt3_python_sim/pt3_simulator.py).
+;     The Python sim is itself a line-by-line port of trfuncs.pas;
+;     this 6502 player implements the same behavior with the same
+;     edge-case handling.
+;
+; Source distribution of the originals: http://bulba.untergrund.net/
+; Public mirror: https://github.com/z00m128/vortextracker25/
+;
+; See docs/THIRD_PARTY_NOTICES.md for the full per-symbol attribution
+; and the carve-out language in LICENSE.
+;
+; Project home: https://github.com/ontrucktoit/pt3player
 ; =============================================================================
 
         .include "pt3_player.inc"

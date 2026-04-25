@@ -1,9 +1,28 @@
 #!/usr/bin/env python3
 """
-PT3 Table Generators — Python port of Ivan Roshin's algorithms
-from Sergey Bulba's VTII PT3 player Release 7 (2007).
+PT3 Table Generators — Python port of Ivan Roshin's NoteTableCreator
+and VolTableCreator algorithms.
 
-Source: http://z80.msx.click/index.php?title=PROTRACKER372_PT3PLAY_H
+Original Z80 source: VTII10 r7 (Vortex Tracker II PT3 player for ZX Spectrum),
+                     released © 2004–2007 Sergey Bulba.
+
+Per Bulba's release notes for VTII10:
+    "Thanks to Andrey Bogdanovich aka Spectre for help and UniSearch;
+     Ivan Roshin for tone and volume tables generators;
+     Alone Coder for TS format description and help."
+
+So the generators in this file are Ivan Roshin's algorithms; the wrapping
+Z80 player is Bulba's. Source distribution: http://bulba.untergrund.net/
+A public mirror of PROTRACKER372 PT3PLAY (Bulba's player containing the
+Roshin generators) is at:
+http://mus.msx.click/index.php?title=PROTRACKER372_PT3PLAY_H
+
+This Python port is part of the PT3 player project for Commodore Plus/4 +
+DigiMuz at https://github.com/ontrucktoit/pt3player. The port itself is
+released under MIT — see LICENSE at the repository root. The original
+algorithms (note-table seed table, depacking, generator state machine)
+are Roshin's / Bulba's work, ported here line-by-line; see
+docs/THIRD_PARTY_NOTICES.md for the full attribution.
 
 Generates note frequency tables and volume combination tables at runtime
 from the same compact seed data used in the original Z80 player. This
