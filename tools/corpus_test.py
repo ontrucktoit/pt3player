@@ -6,7 +6,7 @@ on-the-fly and reporting bit-exact match percentage per file.
 Output: build/corpus_results.txt with summary
 """
 import sys, os, struct, hashlib
-sys.path.insert(0, '/home/linumax/commodore/jukebox/pt3_python_sim/pt3_python_sim')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pt3_python_sim'))
 sys.path.insert(0, 'tests')
 
 from pt3_simulator import PT3Module, simulate

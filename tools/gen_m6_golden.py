@@ -13,7 +13,7 @@ Format tests/m6_ref_<fname>.bin:
 """
 
 import sys, struct, os, hashlib
-sys.path.insert(0, '/home/linumax/commodore/jukebox/pt3_python_sim/pt3_python_sim')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pt3_python_sim'))
 
 from pt3_simulator import PT3Module, simulate
 
@@ -26,13 +26,13 @@ for fname in FILES:
     mod = PT3Module(path)
     psg = simulate(mod, max_frames=NUM_FRAMES, verbose=False)
 
-    state = [0] * 14
+    # Use raw_frames (full per-frame R0..R13 snapshot, with 0xFF sentinel
+    # preserved on R13) — this is what the 6502 player's shadow_ay holds
+    # in each frame and is what harness.py compares bit-for-bit.
     bout = bytearray(b'M6\x00\x01')
-    bout += struct.pack('<H', len(psg.frames))
-    for f in psg.frames:
-        for r, v in f.items():
-            state[r] = v
-        bout += bytes(state)
+    bout += struct.pack('<H', len(psg.raw_frames))
+    for raw in psg.raw_frames:
+        bout += bytes(raw)
 
     out_path = f'{OUT_DIR}/m6_ref_{fname.replace(".pt3","")}.bin'
     with open(out_path, 'wb') as fp:
