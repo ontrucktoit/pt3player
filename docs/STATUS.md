@@ -140,9 +140,9 @@ Committed to `tests/pt3/`:
 
 | File            | Size   | PT3 version | features_lvl | tone_tbl | num_pos | loop_pos | Why in corpus |
 |-----------------|--------|-------------|--------------|----------|---------|----------|---------------|
-| yerzmyey.pt3    | 8646 B | 3.7         | 2            | 1        | 28      | 0        | Python reference 100% match, primary validation target |
-| luchibobra.pt3  | 2236 B | 3.5         | 0            | 2        | 9       | 0        | "ProTracker 3.5 player bug f!x" test file, exercises PT3.5 edge cases |
-| blobbzgame.pt3  |  839 B | Vortex      | 1            | 2        | 8       | 2        | Smallest file; plays cleanly; exercises Vortex signature branch |
+| yerzmyey_fifteen_colours_2014.pt3    | 8646 B | 3.7         | 2            | 1        | 28      | 0        | Python reference 100% match, primary validation target |
+| luchibobra_pt3_player_bug_fix_2000.pt3  | 2236 B | 3.5         | 0            | 2        | 9       | 0        | "ProTracker 3.5 player bug f!x" test file, exercises PT3.5 edge cases |
+| v0yager_blobbzgame.pt3  |  839 B | Vortex      | 1            | 2        | 8       | 2        | Smallest file; plays cleanly; exercises Vortex signature branch |
 
 At M11 we add the remaining 17 files from `pt3_python_sim/test_files/` for the
 full 20-file regression set.
@@ -191,7 +191,7 @@ back cleanly; the merge commit preserves full branch history in the graph.
   so we can invoke any subroutine from Python without simulating IRQ hardware
 
 ### Reference
-- **pt3_simulator.py** (Python PT3 decoder) — 100% VTII text-dump match on yerzmyey.pt3
+- **pt3_simulator.py** (Python PT3 decoder) — 100% VTII text-dump match on yerzmyey_fifteen_colours_2014.pt3
   (1408/1408 rows, 439/439 sample ticks), 100% bit-exact PSG match (8961/8961 frames)
 - **pt3_tables.py** — ports of Bulba VTII10 r7's `NoteTableCreator` + `VolTableCreator`
 - All reference binaries in `tests/` generated deterministically from these scripts

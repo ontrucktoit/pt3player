@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pt3
 from pt3_simulator import PT3Module, simulate
 
 OUT_DIR = 'tests'
-FILES = ['luchibobra.pt3', 'blobbzgame.pt3', 'yerzmyey.pt3', 'pator_cat.pt3', 'mmcm_xiaomi.pt3', 'leebee_farm.pt3', 'freesky.pt3']
+FILES = ['luchibobra_pt3_player_bug_fix_2000.pt3', 'v0yager_blobbzgame.pt3', 'yerzmyey_fifteen_colours_2014.pt3', 'pator_cat.pt3', 'mmcm_xiaomi.pt3', 'leebee_farm.pt3', 'kuvo_free_sky.pt3']
 NUM_FRAMES = 2000  # ~40 seconds at 50 Hz
 
 for fname in FILES:

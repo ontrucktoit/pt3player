@@ -65,9 +65,9 @@ covering all versions, FeaturesLevels, and effects:
 
 | File | Version | FL | Features |
 |------|---------|-----|----------|
-| yerzmyey.pt3 | PT3.7 | 2 | DELAY |
-| blobbzgame.pt3 | VTII 1.0 | 1 | DELAY |
-| luchibobra.pt3 | PT3.5 | 0 | "bug f!x" test song |
+| yerzmyey_fifteen_colours_2014.pt3 | PT3.7 | 2 | DELAY |
+| v0yager_blobbzgame.pt3 | VTII 1.0 | 1 | DELAY |
+| luchibobra_pt3_player_bug_fix_2000.pt3 | PT3.5 | 0 | "bug f!x" test song |
 | Lee_Bee_Basterdale_Farm.pt3 | PT3.5 | 0 | GLISS + PORTM + DELAY |
 | Pator_Parallel_Visions.pt3 | VTII 1.0 | 1 | GLISS + DELAY + ENGLS |
 | FreeSky.pt3 | PT3.7 | 2 | GLISS + VIBRATO + NOISE |

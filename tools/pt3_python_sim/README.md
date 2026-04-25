@@ -57,7 +57,7 @@ exported from VTII). Reports match rate and first mismatches.
 
 Example expected output:
 ```
-Loaded yerzmyey.pt3: version 3.7, 23 positions, speed=3
+Loaded yerzmyey_fifteen_colours_2014.pt3: version 3.7, 23 positions, speed=3
   Samples: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
   Ornaments: [0, 1, 2, 3, 4, 5]
 

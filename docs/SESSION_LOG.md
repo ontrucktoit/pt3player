@@ -4,9 +4,9 @@
 
 ### Python simulator milestone
 **7/7 files bit-exact 100% against VTII reference PSG:**
-- yerzmyey.pt3 (PT3.7, FL=2, DELAY)
-- blobbzgame.pt3 (VTII 1.0, FL=1, DELAY)
-- luchibobra.pt3 (PT3.5, FL=0, "bug f!x" test)
+- yerzmyey_fifteen_colours_2014.pt3 (PT3.7, FL=2, DELAY)
+- v0yager_blobbzgame.pt3 (VTII 1.0, FL=1, DELAY)
+- luchibobra_pt3_player_bug_fix_2000.pt3 (PT3.5, FL=0, "bug f!x" test)
 - Lee_Bee_Basterdale_Farm.pt3 (PT3.5, FL=0, GLISS+PORTM+DELAY)
 - Pator_Parallel_Visions.pt3 (VTII 1.0, FL=1, GLISS+DELAY+ENGLS)
 - FreeSky.pt3 (PT3.7, FL=2, **GLISS+VIBRATO+NOISE** — new effect coverage!)
@@ -284,7 +284,7 @@ on mismatch). Extracts:
 - `position_list` = base + $C9 (`num_positions` bytes)
 
 All three reference files pass all 12 field checks on first try — no debug
-cycle needed. Steps: yerzmyey.pt3 77, luchibobra.pt3 75, blobbzgame.pt3 74.
+cycle needed. Steps: yerzmyey_fifteen_colours_2014.pt3 77, luchibobra_pt3_player_bug_fix_2000.pt3 75, v0yager_blobbzgame.pt3 74.
 
 Code size after M4: 1181 bytes (+219 from M3, 28.8% of 4096). player.bin md5:
 `ad5ccbafec9b0fd7a1e0a9e2db2f7675`.
@@ -436,9 +436,9 @@ Python golden ref bins generated on server (matching sandbox md5s):
 
 ```
 M5a - Pattern Row Decoder (single channel)
-  luchibobra.pt3: PASS (881 rows)
-  blobbzgame.pt3: PASS (277 rows)
-  yerzmyey.pt3: PASS (3223 rows)
+  luchibobra_pt3_player_bug_fix_2000.pt3: PASS (881 rows)
+  v0yager_blobbzgame.pt3: PASS (277 rows)
+  yerzmyey_fifteen_colours_2014.pt3: PASS (3223 rows)
   Result: 3/3 files; 4381/4381 rows bit-exact
 ```
 
@@ -544,9 +544,9 @@ user ever loads a PT3 at, say, $8050. Fixed to full 16-bit add (+9 bytes).
 
 ```
 M5b - Skip + Multi-channel Driver
-  luchibobra.pt3: PASS (455 ticks)
-  blobbzgame.pt3: PASS (520 ticks)
-  yerzmyey.pt3:  PASS (1430 ticks)
+  luchibobra_pt3_player_bug_fix_2000.pt3: PASS (455 ticks)
+  v0yager_blobbzgame.pt3: PASS (520 ticks)
+  yerzmyey_fifteen_colours_2014.pt3:  PASS (1430 ticks)
   Result: 3/3 files; 2405/2405 ticks bit-exact
 ```
 
