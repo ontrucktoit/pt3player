@@ -813,6 +813,10 @@ player_decode_row:
         sta     (M5_OUT_LO),y       ; +10 row_spec_param0
         iny
         sta     (M5_OUT_LO),y       ; +11 row_spec_param1
+        iny
+        sta     (M5_OUT_LO),y       ; +12 row_spec_param2
+        iny
+        sta     (M5_OUT_LO),y       ; +13 row_spec_param3
 
         lda     #0
         sta     dec_pending_count
@@ -1196,8 +1200,46 @@ consume_spec_params:
         dec     dec_spc_nparam
         beq     @spc_done_write_cmd
 
-        ; Skip remaining params
+        ; 3rd param:
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        ldy     #12
+        sta     (M5_OUT_LO),y       ; row_spec_param2
+        inc     M5_PTR_LO
+        bne     @sp3_no_bump
+        inc     M5_PTR_HI
+@sp3_no_bump:
+        dec     dec_spc_nparam
+        beq     @spc_done_write_cmd
+
+        ; 4th param:
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        ldy     #13
+        sta     (M5_OUT_LO),y       ; row_spec_param3
+        inc     M5_PTR_LO
+        bne     @sp4_no_bump
+        inc     M5_PTR_HI
+@sp4_no_bump:
+        dec     dec_spc_nparam
+        beq     @spc_done_write_cmd
+
+        ; 5th param (only cmd 0x02 PORTM has this).
+        ; PT3 cmd 0x02 raw layout: [delay, x1, x2, amount_lo, amount_hi]
+        ; Python sim uses raw[0], raw[3], raw[4]. We've already stored
+        ; raw[0..3] in param0..param3. Now we need to *override* param2
+        ; with the 5th byte (raw[4] = amount_hi), because for cmd 0x02
+        ; param2 was actually raw[2] (unused). Layout after this loop:
+        ;   row_spec_param0 = raw[0] (delay)
+        ;   row_spec_param1 = raw[1] (unused)
+        ;   row_spec_param2 = raw[4] (amount_hi)  <-- overridden by skip
+        ;   row_spec_param3 = raw[3] (amount_lo)
+        ; m6_apply_row_spec_cmd for cmd 0x02 reads delay=p0, lo=p3, hi=p2.
 @skip_extra:
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        ldy     #12
+        sta     (M5_OUT_LO),y       ; row_spec_param2 = raw[4] for cmd 0x02
         inc     M5_PTR_LO
         bne     @skip_no_bump
         inc     M5_PTR_HI
@@ -1493,6 +1535,10 @@ fill_sentinels_ch:
         sta     (M5_OUT_LO),y       ; +10 spec_param0
         iny
         sta     (M5_OUT_LO),y       ; +11 spec_param1
+        iny
+        sta     (M5_OUT_LO),y       ; +12 spec_param2
+        iny
+        sta     (M5_OUT_LO),y       ; +13 spec_param3
         rts
 
 ; =============================================================================
@@ -1672,8 +1718,10 @@ player_init_song:
         ; Python: `pat_num = positions[pos_idx] // 3`. We do same.
         jsr     div_by_3
         jsr     player_init_pattern       ; A = pattern_num
-        ; Pattern length: default 64 for now (TODO: compute actual)
-        lda     #64
+        ; Now compute actual pattern length via pre-pass port of VTII trfuncs.pas
+        ; _compute_pattern_length. Destructive on stream/skip_counter/end_flag;
+        ; m6_compute_pat_len saves & restores these around the pre-pass.
+        jsr     m6_compute_pat_len
         sta     pb_current_pat_len
         rts
 
@@ -2005,12 +2053,134 @@ m6_advance_position:
         lda     (M5_PTR_LO),y               ; pat_num * 3
         jsr     div_by_3
         jsr     player_init_pattern
+        ; Recompute pattern length for new pattern
+        jsr     m6_compute_pat_len
+        sta     pb_current_pat_len
         ; Reset state
         lda     #0
         sta     pb_current_line
         sta     pb_noise_period
         ; player_init_pattern already cleared end_flag_* and reset skip_counter_*
         rts
+; =============================================================================
+; m6_compute_pat_len — port of Python _compute_pattern_length (VTII trfuncs.pas
+; lines 2284-2312). Returns A = pattern length (number of rows).
+;
+; Algorithm:
+;   i = 0
+;   loop:
+;     for k in 0,1,2:
+;       skip_counter[k] -= 1
+;       if skip_counter[k] == 0:
+;         if k == 0 and *stream_A == $00: quit (length = i)
+;         call player_decode_row(k)  ; advance pointer, set nn_skip
+;         skip_counter[k] = nn_skip[k]
+;     if quit: break
+;     i += 1
+;   return i
+;
+; Destructive on ZP_STREAM_*, ch_nn_skip_*, ch_skip_counter_*, ch_end_flag_*.
+; Caller must save/restore if those matter — m6_compute_pat_len does it here.
+; =============================================================================
+m6_compute_pat_len:
+        ; --- Save state ---
+        ldx     #0
+@save_s:
+        lda     ZP_STREAM_A_LO,x           ; $D8 + x = ZP stream
+        sta     compat_save_stream_lo,x
+        inx
+        cpx     #6
+        bne     @save_s
+
+        ldx     #0
+@save_ns:
+        lda     ch_nn_skip_a,x
+        sta     compat_save_nn_skip,x
+        lda     ch_skip_counter_a,x
+        sta     compat_save_skip_ctr,x
+        lda     ch_end_flag_a,x
+        sta     compat_save_end_flag,x
+        inx
+        cpx     #3
+        bne     @save_ns
+
+        ; --- Pre-pass: count rows ---
+        lda     #0
+        sta     compat_row_count
+
+@main_loop:
+        ; 256-row safety limit
+        lda     compat_row_count
+        cmp     #255
+        bcs     @done
+
+        ; For each channel k=0,1,2:
+        ldx     #0
+@ch_loop:
+        dec     ch_skip_counter_a,x
+        lda     ch_skip_counter_a,x
+        bne     @ch_next                    ; not time to decode this row
+
+        ; skip_counter == 0: it's this channel's turn this row
+        cpx     #0
+        bne     @do_decode                  ; only ch A triggers end-of-pattern
+
+        ; ch A: peek stream[0]. If $00, quit.
+        lda     ZP_STREAM_A_LO
+        sta     M5_PTR_LO
+        lda     ZP_STREAM_A_HI
+        sta     M5_PTR_HI
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        bne     @do_decode
+        ; End of pattern — return row count without incrementing
+        jmp     @done
+
+@do_decode:
+        ; player_decode_row(A = x)
+        txa
+        pha                                 ; save x (decode clobbers)
+        jsr     player_decode_row
+        pla
+        tax
+        ; Reset skip_counter = nn_skip
+        lda     ch_nn_skip_a,x
+        sta     ch_skip_counter_a,x
+
+@ch_next:
+        inx
+        cpx     #3
+        bne     @ch_loop
+
+        inc     compat_row_count
+        jmp     @main_loop
+
+@done:
+        ; --- Restore state ---
+        ldx     #0
+@rest_s:
+        lda     compat_save_stream_lo,x
+        sta     ZP_STREAM_A_LO,x
+        inx
+        cpx     #6
+        bne     @rest_s
+
+        ldx     #0
+@rest_ns:
+        lda     compat_save_nn_skip,x
+        sta     ch_nn_skip_a,x
+        lda     compat_save_skip_ctr,x
+        sta     ch_skip_counter_a,x
+        lda     compat_save_end_flag,x
+        sta     ch_end_flag_a,x
+        inx
+        cpx     #3
+        bne     @rest_ns
+
+        lda     compat_row_count
+        rts
+
+
 
 ; =============================================================================
 ; m6_apply_row_to_channel — port of apply_row_to_channel (Python L867-924)
@@ -2244,13 +2414,21 @@ m6_apply_row_globals:
 
 ; -----------------------------------------------------------------------------
 ; m6_apply_row_spec_cmd — port of Python spec_cmd dispatch (L440-555).
-; Reads row_out_ch_<X> offsets 9,10,11 (cmd, param0, param1).
+; Reads row_out_ch_<X> offsets 9..13:
+;   +9  spec_cmd
+;   +10 spec_param0 (raw[0])
+;   +11 spec_param1 (raw[1])
+;   +12 spec_param2 (raw[2] for cmd 0x01/0x08, or raw[4] for cmd 0x02 PORTM)
+;   +13 spec_param3 (raw[3] — relevant only for cmd 0x02 PORTM = amount_lo)
 ;
-; M6 implements: cmd 0x09 (speed), 0x03 (smpos), 0x04 (orpos), 0x05 (vibrato),
-; 0x08 (envslide). cmd 0x01 (gliss) and 0x02 (portm) need 3 and 5 raw bytes
-; respectively but row_out only has 2 param bytes — must read directly from
-; ZP_STREAM minus offset (M5a stored only first 2 bytes). For now, defer:
-; gliss/portamento not yet supported until row_out is extended.
+; Supported commands:
+;   0x01 GLISS   — tone-slide (pos or neg)
+;   0x02 PORTM   — portamento to target note
+;   0x03 SMPOS   — set sample position
+;   0x04 ORPOS   — set ornament position
+;   0x05 VIBRT   — vibrato on/off + delay
+;   0x08 ENGLS   — envelope slide (full signed-16)
+;   0x09 DELAY   — speed change
 ; -----------------------------------------------------------------------------
 m6_apply_row_spec_cmd:
         ; M5_PTR already points to row_out
@@ -2266,38 +2444,42 @@ m6_apply_row_spec_cmd:
         iny
         lda     (M5_PTR_LO),y
         sta     m6_tmp_tone_lo              ; param1
+        ; (param2/param3 read on demand by handlers that need them)
 
         lda     m6_tmp_amp
+
+        ; ---- cmd 0x09 DELAY (speed change) ----
         cmp     #$09
         bne     @not_spd
-        ; Speed change: param0 must be non-zero
         lda     m6_tmp_note
-        beq     @no_cmd
+        bne     @spd_set
+        rts
+@spd_set:
         sta     pb_speed
         rts
 @not_spd:
+
+        ; ---- cmd 0x03 SMPOS (sample position) ----
         cmp     #$03
         bne     @not_smpos
-        ; Sample position: pos_in_sample = param0
         lda     m6_tmp_note
         ldx     m6_tmp_ch_idx
         sta     ch_pos_in_sample_a,x
         rts
 @not_smpos:
+
+        ; ---- cmd 0x04 ORPOS (ornament position) ----
         cmp     #$04
         bne     @not_orpos
-        ; Ornament position: pos_in_ornament = param0
         lda     m6_tmp_note
         ldx     m6_tmp_ch_idx
         sta     ch_pos_in_ornament_a,x
         rts
 @not_orpos:
+
+        ; ---- cmd 0x05 VIBRT (vibrato on/off + delay) ----
         cmp     #$05
         bne     @not_vib
-        ; Vibrato: parameter = (param0 << 4) | param1
-        ; offon_delay = param & 0x0F = param1 (low nibble of combined)
-        ; onoff_delay = (param >> 4) & 0x0F = param0 low nibble
-        ; current_onoff = onoff_delay
         lda     m6_tmp_tone_lo              ; param1 (low nibble target)
         and     #$0F
         ldx     m6_tmp_ch_idx
@@ -2312,25 +2494,220 @@ m6_apply_row_spec_cmd:
         sta     ch_cur_ton_slide_a_hi,x
         rts
 @not_vib:
+
+        ; ---- cmd 0x01 GLISS (tone slide pos/neg) ----
+        cmp     #$01
+        bne     @not_gliss
+        ; Python:
+        ;   delay = raw[0]; amount = signed16(raw[1] | raw[2]<<8)
+        ;   if delay==0 and features_level>=2: delay=1
+        ;   ton_slide_delay = ton_slide_count = delay
+        ;   ton_slide_step = amount  (signed)
+        ;   ton_slide_type = 0
+        ;   current_onoff = 0
+        ldx     m6_tmp_ch_idx
+        lda     m6_tmp_note                 ; delay
+        bne     @gls_have_delay
+        ; delay==0: bump to 1 only if features_level >= 2
+        lda     pt3_features_level
+        cmp     #2
+        bcc     @gls_zero_delay             ; level 0 or 1: keep 0
+        lda     #1
+        jmp     @gls_store_delay
+@gls_zero_delay:
+        lda     #0
+@gls_store_delay:
+        sta     ch_ton_sld_delay_a,x
+        sta     ch_ton_sld_count_a,x
+        jmp     @gls_after_delay
+@gls_have_delay:
+        sta     ch_ton_sld_delay_a,x
+        sta     ch_ton_sld_count_a,x
+@gls_after_delay:
+        lda     m6_tmp_tone_lo              ; param1 = amount_lo
+        sta     ch_ton_sld_step_a_lo,x
+        ldy     #12
+        lda     (M5_PTR_LO),y               ; param2 = amount_hi
+        sta     ch_ton_sld_step_a_hi,x
+        lda     #0
+        sta     ch_ton_sld_type_a,x
+        sta     ch_current_onoff_a,x
+        rts
+@not_gliss:
+
+        ; ---- cmd 0x02 PORTM (portamento to note) ----
+        cmp     #$02
+        beq     @do_portm
+        jmp     @not_portm
+@do_portm:
+        ; Python:
+        ;   delay = raw[0]; amount = signed16(raw[3] | raw[4]<<8)  (we have raw[3]=p3, raw[4]=p2)
+        ;   abs_amount = |amount|
+        ;   apply_portamento = (row.note != None and != release) OR (no note AND fl>=1)
+        ;   if apply and ch.note != None:
+        ;     prev_note = ch.prev_note ?? ch.note  (already set by apply_row_to_channel)
+        ;     target = ch.note (current)
+        ;     ton_slide_delay/count = delay
+        ;     ton_slide_delta = note_table[target] - note_table[prev]
+        ;     slide_to_note = target
+        ;     ch.note = prev_note  (revert)
+        ;     if fl>=1: current_ton_sliding = saved_ton_sliding
+        ;     step = abs_amount; if (delta - sliding < 0): step = -step
+        ;     ton_slide_step = step
+        ;     ton_slide_type = 1
+        ;     current_onoff = 0
+        ;
+        ; In M6 the M5a row_note can be checked: if (M5_PTR),y at offset 0 != $FF
+        ; AND != $FE (release), then "new note this row".
+        ;   $FF = no-note sentinel
+        ;   release: M5a sets ch_flags bit released=1, note retained. Hmm.
+        ;   Actually our M5a writes row_note as raw note value if present, $FF if absent,
+        ;   and a release row triggers a different handler.  Let's re-check: when there's
+        ;   a release ('R--'), row.note in Python = 'release' but our M5a row_out[0] = $FF
+        ;   per fill_sentinels (since release is handled via env_type/flags rather than note).
+        ;   Simpler heuristic: row_note != $FF means "new note this row".
+        ;   For features_level >= 1, "no note this row" also triggers portamento (chain).
+        ldy     #0
+        lda     (M5_PTR_LO),y               ; row_note
+        cmp     #$FF
+        bne     @portm_apply                ; new note: apply unconditionally
+        ; no note: apply only if features_level >= 1
+        lda     pt3_features_level
+        bne     @portm_apply                ; level >= 1: chain portamento
+        jmp     @portm_skip                 ; level 0: no note, no chain
+@portm_apply:
+        ; ch.note != $FF check
+        ldx     m6_tmp_ch_idx
+        lda     ch_note_a,x
+        cmp     #$FF
+        bne     @portm_continue
+        jmp     @portm_skip
+@portm_continue:
+
+        ; ton_slide_delay/count = delay (param0)
+        lda     m6_tmp_note
+        sta     ch_ton_sld_delay_a,x
+        sta     ch_ton_sld_count_a,x
+
+        ; Compute delta = note_table[target] - note_table[prev_note]
+        ; target = ch.note (current); prev = ch.prev_note (set by apply_row_to_channel)
+        ; Both are already in BSS.
+        lda     ch_note_a,x
+        jsr     m6_lookup_note_table        ; returns ZP_TEMP2: lo/hi = freq[note]
+        lda     ZP_TEMP2_LO
+        sta     m6_tmp_orn_ptr_lo           ; target_lo (scratch)
+        lda     ZP_TEMP2_HI
+        sta     m6_tmp_orn_ptr_hi           ; target_hi
+        ldx     m6_tmp_ch_idx
+        lda     ch_prev_note_a,x
+        jsr     m6_lookup_note_table        ; ZP_TEMP2: lo/hi = freq[prev]
+        ; delta = target - prev (signed 16)
+        sec
+        lda     m6_tmp_orn_ptr_lo
+        sbc     ZP_TEMP2_LO
+        ldx     m6_tmp_ch_idx
+        sta     ch_ton_sld_delta_a_lo,x
+        lda     m6_tmp_orn_ptr_hi
+        sbc     ZP_TEMP2_HI
+        sta     ch_ton_sld_delta_a_hi,x
+
+        ; slide_to_note = target_note (= current ch_note)
+        lda     ch_note_a,x
+        sta     ch_slide_to_note_a,x
+        ; ch.note = prev_note (revert)
+        lda     ch_prev_note_a,x
+        sta     ch_note_a,x
+
+        ; if features_level >= 1: current_ton_sliding = saved_ton_sliding
+        lda     pt3_features_level
+        beq     @portm_no_restore
+        lda     ch_saved_ton_slide_a_lo,x
+        sta     ch_cur_ton_slide_a_lo,x
+        lda     ch_saved_ton_slide_a_hi,x
+        sta     ch_cur_ton_slide_a_hi,x
+@portm_no_restore:
+
+        ; abs_amount = |raw[3..4]|; raw[3]=param3 (offset 13), raw[4]=param2 (offset 12)
+        ldy     #13
+        lda     (M5_PTR_LO),y               ; raw[3] = amount_lo
+        sta     m6_tmp_orn_ptr_lo           ; abs_lo (will negate if hi.bit7=1)
+        ldy     #12
+        lda     (M5_PTR_LO),y               ; raw[4] = amount_hi
+        sta     m6_tmp_orn_ptr_hi
+        bpl     @portm_pos
+        ; negative: negate (two's complement) for absolute value
+        sec
+        lda     #0
+        sbc     m6_tmp_orn_ptr_lo
+        sta     m6_tmp_orn_ptr_lo
+        lda     #0
+        sbc     m6_tmp_orn_ptr_hi
+        sta     m6_tmp_orn_ptr_hi
+@portm_pos:
+        ; abs_amount in m6_tmp_orn_ptr (lo,hi)
+
+        ; step = abs; if (delta - cur_sliding) < 0 then step = -step
+        ; Compute (delta - cur_sliding) sign:
+        ldx     m6_tmp_ch_idx
+        sec
+        lda     ch_ton_sld_delta_a_lo,x
+        sbc     ch_cur_ton_slide_a_lo,x
+        lda     ch_ton_sld_delta_a_hi,x
+        sbc     ch_cur_ton_slide_a_hi,x
+        bpl     @portm_step_pos             ; result >= 0: step stays positive
+        ; result < 0: negate step
+        sec
+        lda     #0
+        sbc     m6_tmp_orn_ptr_lo
+        sta     m6_tmp_orn_ptr_lo
+        lda     #0
+        sbc     m6_tmp_orn_ptr_hi
+        sta     m6_tmp_orn_ptr_hi
+@portm_step_pos:
+        lda     m6_tmp_orn_ptr_lo
+        sta     ch_ton_sld_step_a_lo,x
+        lda     m6_tmp_orn_ptr_hi
+        sta     ch_ton_sld_step_a_hi,x
+
+        lda     #1
+        sta     ch_ton_sld_type_a,x
+        lda     #0
+        sta     ch_current_onoff_a,x
+@portm_skip:
+        rts
+@not_portm:
+
+        ; ---- cmd 0x08 ENGLS (envelope slide) ----
         cmp     #$08
         bne     @no_cmd
-        ; Envslide: cur_env_delay = param0; env_slide_add = signed16(param1, ...)
-        ; row_out only has 2 params; M5a stored param0=delay, param1=amount_lo. amount_hi
-        ; was lost. For sign-extend we approximate from sign of param1 — incorrect for
-        ; magnitude > 127. TODO: extend row_out to carry 3rd byte of spec_cmd raw.
-        lda     m6_tmp_note                 ; delay
+        lda     m6_tmp_note                 ; delay = param0
         sta     pb_env_delay
         sta     pb_cur_env_delay
-        lda     m6_tmp_tone_lo              ; amount_lo
+        lda     m6_tmp_tone_lo              ; param1 = amount_lo
         sta     pb_env_slide_add_lo
-        bpl     @es_pos
-        lda     #$FF
-        sta     pb_env_slide_add_hi
-        rts
-@es_pos:
-        lda     #0
+        ldy     #12
+        lda     (M5_PTR_LO),y               ; param2 = amount_hi
         sta     pb_env_slide_add_hi
 @no_cmd:
+        rts
+
+; -----------------------------------------------------------------------------
+; m6_lookup_note_table — A = note (0..95), returns 16-bit freq in ZP_TEMP2.
+; Clamps note to [0, 95]. Clobbers A, X, Y. Preserves m6_tmp_ch_idx contract
+; (caller must reload X if needed).
+; -----------------------------------------------------------------------------
+m6_lookup_note_table:
+        cmp     #96
+        bcc     @lnt_ok
+        lda     #95
+@lnt_ok:
+        asl     a                           ; *2 (note_table = 2 bytes/entry)
+        tay
+        lda     note_table,y
+        sta     ZP_TEMP2_LO
+        iny
+        lda     note_table,y
+        sta     ZP_TEMP2_HI
         rts
 
 ; =============================================================================
@@ -3261,9 +3638,16 @@ pt3_position_list_hi:   .res 1
 pt3_parse_error:        .res 1
 
 ; M5a pattern decoder state
-row_out_ch_a:           .res 12
-row_out_ch_b:           .res 12
-row_out_ch_c:           .res 12
+row_out_ch_a:           .res 14
+row_out_ch_b:           .res 14
+row_out_ch_c:           .res 14
+
+; Temp state save for m6_compute_pat_len pre-pass
+compat_save_stream_lo:  .res 6       ; ZP_STREAM_A/B/C_LO/HI
+compat_save_nn_skip:    .res 3       ; ch_nn_skip_[abc]
+compat_save_skip_ctr:   .res 3       ; ch_skip_counter_[abc]
+compat_save_end_flag:   .res 3       ; ch_end_flag_[abc]
+compat_row_count:       .res 1       ; pattern length counter during pre-pass
 
 ch_nn_skip_a:           .res 1
 ch_nn_skip_b:           .res 1

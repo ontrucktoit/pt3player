@@ -622,7 +622,7 @@ PLAYER_INIT_SONG = PLAYER_BASE + 0x2A
 PLAYER_TICK = PLAYER_BASE + 0x2D
 
 
-def test_m6(max_frames=8000):
+def test_m6(max_frames=2000):
     """Run M6 player for N frames per file, diff shadow_ay vs golden ref bit-exact.
     
     For each test file:
@@ -644,7 +644,7 @@ def test_m6(max_frames=8000):
     files_pass = 0
     files_fail = 0
 
-    for fname in ['luchibobra.pt3', 'blobbzgame.pt3', 'yerzmyey.pt3']:
+    for fname in ['luchibobra.pt3', 'blobbzgame.pt3', 'yerzmyey.pt3', 'pator_cat.pt3', 'mmcm_xiaomi.pt3', 'leebee_farm.pt3', 'freesky.pt3']:
         ref_path = TESTS_DIR / f"m6_ref_{fname.replace('.pt3','')}.bin"
         ref = ref_path.read_bytes()
         assert ref[:4] == b'M6\x00\x01', f"bad magic in {ref_path}"

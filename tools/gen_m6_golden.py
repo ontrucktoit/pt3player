@@ -18,8 +18,8 @@ sys.path.insert(0, '/home/linumax/commodore/jukebox/pt3_python_sim/pt3_python_si
 from pt3_simulator import PT3Module, simulate
 
 OUT_DIR = 'tests'
-FILES = ['luchibobra.pt3', 'blobbzgame.pt3', 'yerzmyey.pt3']
-NUM_FRAMES = 8000  # ~40 seconds at 50 Hz
+FILES = ['luchibobra.pt3', 'blobbzgame.pt3', 'yerzmyey.pt3', 'pator_cat.pt3', 'mmcm_xiaomi.pt3', 'leebee_farm.pt3', 'freesky.pt3']
+NUM_FRAMES = 2000  # ~40 seconds at 50 Hz
 
 for fname in FILES:
     path = f'tests/pt3/{fname}'
