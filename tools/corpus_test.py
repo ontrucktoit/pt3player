@@ -36,12 +36,11 @@ for fname in CORPUS:
         results.append((fname, 0, NUM_FRAMES, str(e)))
         continue
     
-    state = [0] * 14
-    ref_frames = []
-    for f in psg.frames:
-        for r, v in f.items():
-            state[r] = v
-        ref_frames.append(bytes(state))
+    # Use raw_frames (full per-frame R0..R13 snapshot, with 0xFF sentinel
+    # preserved on R13) — same convention as gen_m6_golden.py and
+    # tests/m6_ref_*.bin. The 0xFF in ay_regs[13] means "do not write R13"
+    # this frame; the 6502 player honors this in m6_write_ay_regs.
+    ref_frames = [bytes(raw) for raw in psg.raw_frames]
     
     # Run 6502 port
     mpu, obs = build_sim()
