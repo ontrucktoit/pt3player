@@ -75,6 +75,13 @@ start:
         sta     $FF11
         sta     $FF12
 
+        ; IMPORTANT: switch all ROMs off FIRST so that $8000-$BFFF reveals our
+        ; embedded PT3 file (otherwise BASIC ROM high shadows it, load_pt3 reads
+        ; garbage from ROM, signature check fails, parse_error=1, silent output).
+        ; Writing any value to $FF3F enables RAM mode across the entire address
+        ; space; writing to $FF3E re-enables ROMs.
+        sta     RAM_ENABLE       ; A can hold anything; value is irrelevant
+
         ; Establish clean player state (zeros all 14 AY regs via DigiMuz)
         jsr     PLAYER_INIT
 
@@ -83,9 +90,6 @@ start:
         lda     #>PT3_BASE
         ldx     #<PT3_BASE
         jsr     PLAYER_INIT_SONG
-
-        ; Switch vectors to RAM so we can override $FFFE/$FFFF.
-        sta     RAM_ENABLE       ; any write -> RAM mode for $8000+
 
         ; Install our IRQ handler at $FFFE/$FFFF.
         lda     #<our_irq

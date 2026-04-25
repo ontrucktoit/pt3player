@@ -20,7 +20,7 @@ def main():
     pt3     = open(PT3, 'rb').read()
 
     # Sanity sizes
-    assert len(startup) == 0xFF, f"startup must be 255 B, got {len(startup)}"
+    assert len(startup) == 257, f"startup must be 2+255=257 B (PRG hdr + body), got {len(startup)}"
     assert len(player)  == 0x2000, f"player must be 8 KB, got {len(player)}"
     print(f"  startup.bin: {len(startup)} B")
     print(f"  player.bin:  {len(player)} B")
