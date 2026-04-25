@@ -296,19 +296,41 @@ class Channel:
 # -------- PSG writer --------
 class PSGWriter:
     def __init__(self):
-        self.frames: List[dict] = []  # each frame is dict {reg: value} of CHANGES
+        self.frames: List[dict] = []  # each frame is dict {reg: value} of CHANGES (PSG-format)
+        self.raw_frames: List[List[int]] = []  # each frame is full [R0..R13] snapshot, may contain R13=0xFF sentinel
         self.last_state = [0] * 14
     
     def write_frame(self, new_state: List[int]):
-        """Record a frame. Only writes that changed from last frame are stored."""
+        """Record a frame. Only writes that changed from last frame are stored.
+
+        R13 (envelope shape) honors the 0xFF sentinel meaning 'do not write R13
+        this frame' — see simulate() and the comment in pt3_player.s about why
+        unconditional R13 writes restart the envelope generator on real AY.
+
+        - new_state[13] == 0xFF: do not record an R13 write (sentinel)
+        - new_state[13] != 0xFF AND differs from last_state[13]: record
+        - last_state[13] is updated only when we actually write, so the
+          'previous shape' tracking matches what the AY chip really saw.
+        """
         changes = {}
         for r in range(14):
+            if r == 13:
+                # R13: skip when sentinel; only record real writes that change shape
+                if new_state[13] == 0xFF:
+                    continue
+                if new_state[13] != self.last_state[13]:
+                    changes[13] = new_state[13]
+                    self.last_state[13] = new_state[13]
+                continue
             if new_state[r] != self.last_state[r]:
                 changes[r] = new_state[r]
-            # Special case: R13 envelope shape WRITE restarts envelope even with same value,
-            # so treat R13 specially: record only if explicitly requested (via env_retrigger flag)
+                self.last_state[r] = new_state[r]
         self.frames.append(changes)
-        self.last_state = list(new_state)
+        # Also keep a raw snapshot of the full register state (with 0xFF
+        # sentinel preserved). This is what the 6502 player's shadow_ay holds
+        # at the end of player_tick, and is used by gen_m6_golden.py to
+        # produce the m6_ref_*.bin oracle for harness.py bit-exact tests.
+        self.raw_frames.append(list(new_state))
     
     def emit_psg_bytes(self) -> bytes:
         """Produce PSG binary."""
