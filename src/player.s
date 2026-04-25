@@ -1779,9 +1779,14 @@ div_by_3:
 ; Port of pt3_simulator.simulate() body (one frame iteration).
 ; -----------------------------------------------------------------------------
 player_tick:
-        ; Stage 1: sam_env_p = 0
+        ; Stage 1: sam_env_p = 0; pb_r13_dirty = 0
+        ; pb_r13_dirty becomes 1 only when SETENV opcode (env_type 1..14)
+        ; runs in apply_row_globals. Stays 0 in non-row-boundary ticks
+        ; (because apply_row_globals is only called on tick_in_row == 0)
+        ; AND in row-boundary ticks where no channel had SETENV.
         lda     #0
         sta     pb_sam_env_p
+        sta     pb_r13_dirty
 
         ; Stage 2: if tick_in_row == 0, decode and apply row for all channels
         lda     pb_tick_in_row
@@ -1846,13 +1851,20 @@ player_tick:
         adc     m6_tmp_amp                  ; sign-extension high byte
         sta     shadow_ay + AY_R12_ENV_HI
 
-        ; R13 = env_shape (sentinel $FF = no write).
-        ; In Python the write happens unconditionally. We do the same; R13 will be
-        ; $FF for frames 0 until any setenv opcode runs. This is fine — VTII output
-        ; emits $FF too in those cases. (Actually no: VTII emits 0 initially. We'll
-        ; need to ensure pb_env_shape starts at 0 in init_song.)
+        ; R13 = env_shape only when SETENV ran in this row's decode.
+        ; Otherwise emit 0xFF sentinel — m6_write_ay_regs sees the negative
+        ; value and skips the AY write entirely. This is the PT3 convention
+        ; (see PTDECOD ROUT routine on Z80 reference); any unconditional R13
+        ; write to AY restarts the envelope generator at 50 Hz.
+        lda     pb_r13_dirty
+        beq     @r13_no_write
         lda     pb_env_shape
         sta     shadow_ay + AY_R13_ENV_SHAPE
+        jmp     @r13_done
+@r13_no_write:
+        lda     #$FF
+        sta     shadow_ay + AY_R13_ENV_SHAPE
+@r13_done:
 
         ; Stage 5: envslide countdown
         lda     pb_cur_env_delay
@@ -1885,17 +1897,34 @@ player_tick:
         rts
 
 ; =============================================================================
-; m6_write_ay_regs — write all 14 shadow_ay bytes to DigiMuz
+; m6_write_ay_regs — write 14 shadow_ay bytes to DigiMuz, R13 conditionally
 ; =============================================================================
 ; Sequence: STX $FD23 (select reg) then STA $FD22 (write data) per register.
 ; Uses X as register index 0..13.
+;
+; SPECIAL CASE: R13 (envelope shape).
+;   Writing R13 to AY restarts the envelope generator, even with same value.
+;   PT3 convention: R13 is written ONLY when SETENV opcode (env_type 1..14)
+;   appears in the current row. Other frames must skip the R13 write.
+;   The Python simulator emits 0xFF in shadow_ay[13] as a sentinel meaning
+;   "do not write this frame". We test for negative (BMI catches 0x80..0xFF)
+;   to skip the STA \$FD22 for R13.
+;
+;   Without this skip, every frame restarts the envelope at 50 Hz, producing
+;   audible buzz on the envelope contour in any song using envelopes.
 ; -----------------------------------------------------------------------------
 m6_write_ay_regs:
         ldx     #0
 @loop:
-        stx     DIGIMUZ_REG_SEL
         lda     shadow_ay,x
+        cpx     #13
+        bne     @do_write                ; X != 13: always write
+        ; X == 13: skip write if shadow value is sentinel 0xFF (or any 0x80..0xFF)
+        bmi     @skip_r13
+@do_write:
+        stx     DIGIMUZ_REG_SEL
         sta     DIGIMUZ_DATA_W
+@skip_r13:
         inx
         cpx     #14
         bne     @loop
@@ -2400,6 +2429,9 @@ m6_apply_row_globals:
         cmp     #15
         bcs     @no_es
         sta     pb_env_shape
+        ; PT3: SETENV opcode with env_type 1..14 — mark R13 as dirty so
+        ; the actual AY register gets re-written this frame.
+        inc     pb_r13_dirty
         lda     #0
         sta     pb_cur_env_slide_lo
         sta     pb_cur_env_slide_hi
@@ -3818,6 +3850,7 @@ pb_sam_env_p:           .res 1    ; reset each frame, accumulated per-channel
 pb_env_period_lo:       .res 1
 pb_env_period_hi:       .res 1
 pb_env_shape:           .res 1    ; R13 pending write value, $FF = no write
+pb_r13_dirty:           .res 1    ; 1 if SETENV ran this frame; reset each frame
 pb_end_of_song:         .res 1    ; flag when song loop hits end
 pb_env_delay:           .res 1    ; effect 9 envslide state (global)
 pb_cur_env_delay:       .res 1
@@ -3942,6 +3975,7 @@ m6_decoded:             .res 3   ; per-channel decoded flag (used in decode loop
 .export pb_env_period_lo
 .export pb_env_period_hi
 .export pb_env_shape
+.export pb_r13_dirty
 .export pb_current_pat_len
 .export pb_cur_env_slide_lo
 .export pb_cur_env_slide_hi
