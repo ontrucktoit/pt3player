@@ -2,6 +2,14 @@
 """
 PT3 sample decoder.
 
+The sample-byte layout decoded here matches what Bulba documents in his
+PT3 player source and what Vortex Tracker II's `trfuncs.pas` reads from
+sample data. This implementation is independent (no line-by-line port);
+it just reads the same bit fields, because there is only one wire format.
+
+Released under MIT — see LICENSE at the repository root, and
+docs/THIRD_PARTY_NOTICES.md for the broader attribution context.
+
 Sample format in binary:
   [loop_pos : 1B]
   [length   : 1B]
