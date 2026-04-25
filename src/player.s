@@ -2269,10 +2269,13 @@ m6_apply_row_to_channel:
         sta     ch_noise_sliding_a,x
         sta     ch_cur_ton_slide_a_lo,x
         sta     ch_cur_ton_slide_a_hi,x
-        sta     ch_ton_sld_count_a,x      ; <-- typo in BSS? check
+        sta     ch_ton_sld_count_a,x
+        sta     ch_current_onoff_a,x      ; Python reset_sample_ornament: current_onoff = 0
         ; Clear ton slide as well? Python reset_sample_ornament zeroes pos_in_sample/ornament
         ; and amp_slide_accum/ton_accumulator/current_envelope_sliding/current_noise_sliding.
         ; ton_slide_* are NOT reset here (they belong to effect setup, not note trigger).
+        ; current_onoff IS reset (vibrato state), bringing sound_enabled back to True via
+        ; the flag bit-3 set above.
 @no_note:
 @after_note:
 
