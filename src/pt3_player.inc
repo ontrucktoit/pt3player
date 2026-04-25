@@ -53,6 +53,9 @@ PLAYER_BUILD_VOLUME_TABLE = PLAYER_BASE + $1B
 PLAYER_DECODE_ROW   = PLAYER_BASE + $1E
 PLAYER_INIT_PATTERN = PLAYER_BASE + $21
 PLAYER_DECODE_ALL   = PLAYER_BASE + $24
+PLAYER_PLAY_TEST_TONE = PLAYER_BASE + $27
+PLAYER_INIT_SONG    = PLAYER_BASE + $2A
+PLAYER_TICK         = PLAYER_BASE + $2D
 
 ; -----------------------------------------------------------------------------
 ; Zero page allocation ($D8-$E8, 17 bytes safe per SVS Ultimate Map v2.2)

@@ -615,6 +615,90 @@ def test_m5b():
     return 0 if files_fail == 0 else 1
 
 
+# -----------------------------------------------------------------------------
+# M6 test — full per-tick playback engine, bit-exact vs Python PSG sim
+# -----------------------------------------------------------------------------
+PLAYER_INIT_SONG = PLAYER_BASE + 0x2A
+PLAYER_TICK = PLAYER_BASE + 0x2D
+
+
+def test_m6(max_frames=2000):
+    """Run M6 player for N frames per file, diff shadow_ay vs golden ref bit-exact.
+    
+    For each test file:
+      1. Build sim, load player + pt3
+      2. Call player_init then player_init_song
+      3. Loop: call player_tick; read shadow_ay; compare to golden frame
+      4. Report first-mismatch frame and ratio of matching frames
+    """
+    print("=" * 70)
+    print("M6 - Full playback engine (bit-exact vs Python PSG sim)")
+    print("=" * 70)
+    assemble_player()
+
+    syms = {name: find_symbol(name) for name in [
+        "shadow_ay",
+    ]}
+
+    BASE = 0x8000
+    files_pass = 0
+    files_fail = 0
+
+    for fname in ['luchibobra.pt3', 'blobbzgame.pt3', 'yerzmyey.pt3', 'pator_cat.pt3', 'mmcm_xiaomi.pt3', 'leebee_farm.pt3', 'freesky.pt3']:
+        ref_path = TESTS_DIR / f"m6_ref_{fname.replace('.pt3','')}.bin"
+        ref = ref_path.read_bytes()
+        assert ref[:4] == b'M6\x00\x01', f"bad magic in {ref_path}"
+        n_ref_frames = ref[4] | (ref[5] << 8)
+        # frames stored at offset 6, 14 bytes each
+        def get_ref_frame(i):
+            base_off = 6 + i * 14
+            return ref[base_off:base_off+14]
+
+        mpu, obs = build_sim()
+        load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
+        pt3 = (TESTS_DIR / "pt3" / fname).read_bytes()
+        for i, b in enumerate(pt3):
+            mpu.memory[BASE + i] = b
+        call_sub(mpu, PLAYER_INIT)
+        # player_init_song(A=hi, X=lo)
+        mpu.a = BASE >> 8
+        mpu.x = BASE & 0xFF
+        call_sub(mpu, PLAYER_INIT_SONG)
+
+        # Frame 0 is reference initial state (all zeros).
+        # Python emits frame 0 as zeros BEFORE the loop. We compare frame 1+.
+        N = min(max_frames, n_ref_frames - 1)
+        frame_pass = 0
+        first_fail = None
+
+        for f_idx in range(1, N + 1):
+            call_sub(mpu, PLAYER_TICK)
+            actual = bytes(mpu.memory[syms["shadow_ay"] + r] for r in range(14))
+            expected = get_ref_frame(f_idx)
+            if actual == expected:
+                frame_pass += 1
+            elif first_fail is None:
+                diffs = [(r, actual[r], expected[r]) for r in range(14) if actual[r] != expected[r]]
+                first_fail = (f_idx, diffs)
+
+        if frame_pass == N:
+            print(f"  {fname}: PASS ({frame_pass}/{N} frames bit-exact)")
+            files_pass += 1
+        else:
+            ratio = 100.0 * frame_pass / N if N else 0.0
+            print(f"  {fname}: FAIL ({frame_pass}/{N} frames, {ratio:.1f}%)")
+            if first_fail:
+                fi, diffs = first_fail
+                print(f"    first mismatch at frame {fi}:")
+                for r, got, exp in diffs[:8]:
+                    print(f"      R{r:2d}: got ${got:02X}  exp ${exp:02X}")
+            files_fail += 1
+
+    print()
+    print(f"  Result: {files_pass}/{files_pass + files_fail} files; bit-exact playback")
+    return 0 if files_fail == 0 else 1
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
     if cmd == "m1":
@@ -629,6 +713,8 @@ if __name__ == "__main__":
         sys.exit(test_m5a())
     elif cmd == "m5b":
         sys.exit(test_m5b())
+    elif cmd == "m6":
+        sys.exit(test_m6())
     elif cmd == "all":
         r1 = test_m1()
         r2 = test_m2()
@@ -636,7 +722,8 @@ if __name__ == "__main__":
         r4 = test_m4()
         r5 = test_m5a()
         r6 = test_m5b()
-        sys.exit(r1 | r2 | r3 | r4 | r5 | r6)
+        r7 = test_m6()
+        sys.exit(r1 | r2 | r3 | r4 | r5 | r6 | r7)
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)

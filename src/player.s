@@ -1,12 +1,12 @@
 ; =============================================================================
-; player.s - PT3 Player M2+M3+M4+M5a+M5b: +Skip/Multi-channel Driver
+; player.s - PT3 Player M2+M3+M4+M5a+M5b+M6: +Full playback engine
 ; =============================================================================
 
         .include "pt3_player.inc"
 
         .segment "CODE"
 
-; Jump table at $3000 (13 entries × 3 bytes)
+; Jump table at $3000 (16 entries × 3 bytes)
 jump_table:
         jmp player_init                  ; $3000
         jmp player_load_pt3              ; $3003
@@ -21,6 +21,9 @@ jump_table:
         jmp player_decode_row            ; $301E — M5a
         jmp player_init_pattern          ; $3021 — M5b
         jmp player_decode_row_all        ; $3024 — M5b
+        jmp player_play_test_tone        ; $3027 — M6-p1
+        jmp player_init_song             ; $302A — M6
+        jmp player_tick                  ; $302D — M6
 
 ; -----------------------------------------------------------------------------
 player_init:
@@ -810,6 +813,10 @@ player_decode_row:
         sta     (M5_OUT_LO),y       ; +10 row_spec_param0
         iny
         sta     (M5_OUT_LO),y       ; +11 row_spec_param1
+        iny
+        sta     (M5_OUT_LO),y       ; +12 row_spec_param2
+        iny
+        sta     (M5_OUT_LO),y       ; +13 row_spec_param3
 
         lda     #0
         sta     dec_pending_count
@@ -1193,8 +1200,46 @@ consume_spec_params:
         dec     dec_spc_nparam
         beq     @spc_done_write_cmd
 
-        ; Skip remaining params
+        ; 3rd param:
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        ldy     #12
+        sta     (M5_OUT_LO),y       ; row_spec_param2
+        inc     M5_PTR_LO
+        bne     @sp3_no_bump
+        inc     M5_PTR_HI
+@sp3_no_bump:
+        dec     dec_spc_nparam
+        beq     @spc_done_write_cmd
+
+        ; 4th param:
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        ldy     #13
+        sta     (M5_OUT_LO),y       ; row_spec_param3
+        inc     M5_PTR_LO
+        bne     @sp4_no_bump
+        inc     M5_PTR_HI
+@sp4_no_bump:
+        dec     dec_spc_nparam
+        beq     @spc_done_write_cmd
+
+        ; 5th param (only cmd 0x02 PORTM has this).
+        ; PT3 cmd 0x02 raw layout: [delay, x1, x2, amount_lo, amount_hi]
+        ; Python sim uses raw[0], raw[3], raw[4]. We've already stored
+        ; raw[0..3] in param0..param3. Now we need to *override* param2
+        ; with the 5th byte (raw[4] = amount_hi), because for cmd 0x02
+        ; param2 was actually raw[2] (unused). Layout after this loop:
+        ;   row_spec_param0 = raw[0] (delay)
+        ;   row_spec_param1 = raw[1] (unused)
+        ;   row_spec_param2 = raw[4] (amount_hi)  <-- overridden by skip
+        ;   row_spec_param3 = raw[3] (amount_lo)
+        ; m6_apply_row_spec_cmd for cmd 0x02 reads delay=p0, lo=p3, hi=p2.
 @skip_extra:
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        ldy     #12
+        sta     (M5_OUT_LO),y       ; row_spec_param2 = raw[4] for cmd 0x02
         inc     M5_PTR_LO
         bne     @skip_no_bump
         inc     M5_PTR_HI
@@ -1490,7 +1535,1966 @@ fill_sentinels_ch:
         sta     (M5_OUT_LO),y       ; +10 spec_param0
         iny
         sta     (M5_OUT_LO),y       ; +11 spec_param1
+        iny
+        sta     (M5_OUT_LO),y       ; +12 spec_param2
+        iny
+        sta     (M5_OUT_LO),y       ; +13 spec_param3
         rts
+
+; =============================================================================
+; player_play_test_tone()
+; =============================================================================
+; M6-p1 smoke test: sets AY to generate a pure tone on channel A.
+; Writes directly to DigiMuz registers ($FD21/$FD22/$FD23).
+;
+; AY setup:
+;   R0 = $00, R1 = $02   tone period ch A = $0200 (~mid-range C-ish)
+;   R2-R5 = 0            tone period ch B/C = 0 (silent if enabled, but masked)
+;   R6 = 0               noise period
+;   R7 = $3E             mixer: ch A tone enabled, B/C muted
+;                        (bit pattern: NC NB NA TC TB TA, 0=enable)
+;                        Actually: bit 0 = TA (0 enables ch A tone)
+;                                   bit 1 = TB   bit 2 = TC
+;                                   bit 3 = NA   bit 4 = NB   bit 5 = NC
+;                        $3E = %00111110 = TA enabled, TB/TC/NA/NB/NC disabled
+;   R8 = $0F             ch A amplitude = 15 (max), envelope off
+;   R9 = 0, R10 = 0      ch B/C amplitudes = 0
+;   R11-R13 = 0          envelope period and shape unused
+;
+; Does NOT require pt3 loaded or player_init. Pure hardware check.
+; Clobbers A, X.
+; -----------------------------------------------------------------------------
+player_play_test_tone:
+        ldx     #0
+        lda     #$00
+        stx     $FD23
+        sta     $FD22                    ; R0 = tone A lo
+        inx                              ; R1
+        lda     #$02
+        stx     $FD23
+        sta     $FD22                    ; R1 = tone A hi ($0200 period)
+
+        lda     #$00
+        ; R2..R6 = 0 (silence B/C tone, noise period 0)
+@zero_loop:
+        inx                              ; X = 2, 3, 4, 5, 6
+        stx     $FD23
+        sta     $FD22
+        cpx     #6
+        bne     @zero_loop
+
+        ; R7 mixer: $3E = enable A tone only
+        lda     #7
+        sta     $FD23
+        lda     #$3E
+        sta     $FD22
+
+        ; R8 = $0F max amplitude ch A
+        lda     #8
+        sta     $FD23
+        lda     #$0F
+        sta     $FD22
+
+        ; R9, R10 = 0 (ch B, C silent)
+        lda     #9
+        sta     $FD23
+        lda     #0
+        sta     $FD22
+        lda     #10
+        sta     $FD23
+        lda     #0
+        sta     $FD22
+
+        ; R11, R12, R13 = 0 (no envelope activity)
+        lda     #11
+        sta     $FD23
+        lda     #0
+        sta     $FD22
+        lda     #12
+        sta     $FD23
+        lda     #0
+        sta     $FD22
+        lda     #13
+        sta     $FD23
+        lda     #0
+        sta     $FD22
+        rts
+
+; =============================================================================
+; M6 — Full playback engine
+; =============================================================================
+; Entry points:
+;   player_init_song(A=hi, X=lo)  — A/X point to PT3 file in RAM
+;   player_tick()                  — called once per frame (50/60 Hz)
+;
+; Must be called after player_init (which builds note/volume tables and
+; clears all state). player_init_song performs:
+;   1. player_load_pt3   — parse header, populate pt3_* fields
+;   2. player_build_note_table / volume_table (if not yet)
+;   3. Clear all ch_* and pb_* fields
+;   4. Initialize default sample_num=1 per channel
+;   5. Load first pattern via player_init_pattern(positions[0]/3)
+;   6. Reset pb_tick_in_row, pb_position_idx, pb_current_line, pb_speed
+;
+; Clobbers A, X, Y.
+; -----------------------------------------------------------------------------
+player_init_song:
+        ; Save A/X for load_pt3 call (A=hi, X=lo per convention).
+        pha
+        txa
+        pha
+        ; Clear all M6 state from ch_note_a through pb_cur_env_slide_hi
+        jsr     m6_clear_state
+        pla
+        tax
+        pla
+        jsr     player_load_pt3
+        lda     pt3_parse_error
+        beq     @load_ok
+        rts                              ; header invalid; caller detects via pt3_parse_error
+@load_ok:
+        ; Build note table: A = pt3_tone_table, X = version_is_old
+        ; Python L194: version_is_old = 1 if pt_version < 4 else 0.
+        ; pt3_version_char is ASCII '0'..'9' = $30..$39. version_is_old=1 iff char in '0'..'3'.
+        lda     pt3_version_char
+        cmp     #$34                    ; '4'
+        bcs     @nt_new
+        ldx     #1                      ; version_is_old=1 (chars '0'..'3')
+        jmp     @nt_call
+@nt_new:
+        ldx     #0                      ; version_is_old=0 (chars '4'..'9' and others)
+@nt_call:
+        lda     pt3_tone_table
+        jsr     player_build_note_table
+
+        ; Build volume table: A = pt_version. Python L204 hardcodes pt_version=7
+        ; (discovered via Foxx-1998 PT3.3 test - VTII uses single new table for all
+        ; versions regardless of source file's PT3 version). Match VTII bit-exact.
+        lda     #7
+        jsr     player_build_volume_table
+
+        ; Set speed from pt3_delay
+        lda     pt3_delay
+        sta     pb_speed
+
+        ; Default sample = 1 per channel (VTII quirk)
+        lda     #1
+        sta     ch_sample_num_a
+        sta     ch_sample_num_b
+        sta     ch_sample_num_c
+
+        ; Default volume = 15 per channel (Python Channel.__init__ L219)
+        lda     #15
+        sta     ch_volume_a
+        sta     ch_volume_b
+        sta     ch_volume_c
+
+        ; Note = $FF (no note yet)
+        lda     #$FF
+        sta     ch_note_a
+        sta     ch_note_b
+        sta     ch_note_c
+        sta     ch_prev_note_a
+        sta     ch_prev_note_b
+        sta     ch_prev_note_c
+
+        ; pb_env_shape starts at 0 (Python sim line 343: env_shape = 0)
+        ; m6_clear_state already zeroed it; this is documentary.
+
+        ; Get first pattern number from position list
+        ldy     #0
+        sty     pb_position_idx
+        sty     pb_current_line
+        sty     pb_tick_in_row
+
+        ; Load positions[0] via M5_PTR scratch.
+        lda     pt3_position_list_lo
+        sta     M5_PTR_LO
+        lda     pt3_position_list_hi
+        sta     M5_PTR_HI
+        ldy     #0
+        lda     (M5_PTR_LO),y             ; byte = pattern_num * 3
+        ; Divide by 3 — but we don't have /3. M5b expects pattern_num (not *3).
+        ; Python: `pat_num = positions[pos_idx] // 3`. We do same.
+        jsr     div_by_3
+        jsr     player_init_pattern       ; A = pattern_num
+        ; Now compute actual pattern length via pre-pass port of VTII trfuncs.pas
+        ; _compute_pattern_length. Destructive on stream/skip_counter/end_flag;
+        ; m6_compute_pat_len saves & restores these around the pre-pass.
+        jsr     m6_compute_pat_len
+        sta     pb_current_pat_len
+        rts
+
+; -----------------------------------------------------------------------------
+; m6_clear_state: zero all M6 BSS from ch_note_a to pb_cur_env_slide_hi.
+; Uses a memset loop based on label arithmetic.
+; -----------------------------------------------------------------------------
+m6_clear_state:
+        ; We'll clear from ch_note_a to pb_cur_env_slide_hi inclusive.
+        ; Size = pb_cur_env_slide_hi + 1 - ch_note_a
+        lda     #<ch_note_a
+        sta     M5_PTR_LO
+        lda     #>ch_note_a
+        sta     M5_PTR_HI
+        ldy     #0
+        ldx     #<(pb_cur_env_slide_hi + 1 - ch_note_a)
+@loop:
+        lda     #0
+        sta     (M5_PTR_LO),y
+        inc     M5_PTR_LO
+        bne     @no_hi
+        inc     M5_PTR_HI
+@no_hi:
+        dex
+        bne     @loop
+        ; If the range exceeded 256 we'd need a 16-bit count — the range
+        ; here is well under 200 bytes, so X suffices.
+        rts
+
+; -----------------------------------------------------------------------------
+; div_by_3: A /= 3. Uses a lookup table for 0..255 to avoid division loop.
+; Returns quotient in A.
+; -----------------------------------------------------------------------------
+div_by_3:
+        ; Position list values are pattern_num*3; pattern_num is 0..85.
+        ; A is in {0, 3, 6, ..., 255}. Simple repeated subtraction:
+        ;   while A >= 3: A -= 3; quotient++
+        ; Use X as quotient accumulator (caller must not care about X).
+        ldx     #0
+@sub:
+        cmp     #3
+        bcc     @done                   ; A < 3 → stop
+        sec
+        sbc     #3
+        inx
+        jmp     @sub
+@done:
+        txa                             ; return quotient in A
+        rts
+
+; -----------------------------------------------------------------------------
+; player_tick: called once per 50/60 Hz frame. Does one complete pass of
+; the PT3 playback engine and writes 14 AY registers to DigiMuz.
+;
+; Port of pt3_simulator.simulate() body (one frame iteration).
+; -----------------------------------------------------------------------------
+player_tick:
+        ; Stage 1: sam_env_p = 0
+        lda     #0
+        sta     pb_sam_env_p
+
+        ; Stage 2: if tick_in_row == 0, decode and apply row for all channels
+        lda     pb_tick_in_row
+        bne     @no_decode
+        jsr     m6_decode_and_apply_row
+@no_decode:
+
+        ; Stage 3: per-channel compute (sets shadow_ay R0..R5, R8..R10, accum mixer)
+        lda     #0
+        sta     m6_tmp_mixer_bits
+
+        lda     #0
+        sta     m6_tmp_ch_idx
+        jsr     m6_compute_channel
+        lda     #1
+        sta     m6_tmp_ch_idx
+        jsr     m6_compute_channel
+        lda     #2
+        sta     m6_tmp_ch_idx
+        jsr     m6_compute_channel
+
+        ; Stage 4: finalize global registers R6, R7, R11, R12, R13
+        ; R6 = (noise_period + sam_noise) & 0x1F
+        clc
+        lda     pb_noise_period
+        adc     pb_sam_noise
+        and     #$1F
+        sta     shadow_ay + AY_R6_NOISE
+
+        ; R7 = mixer bits
+        lda     m6_tmp_mixer_bits
+        sta     shadow_ay + AY_R7_MIXER
+
+        ; R11/R12 = (env_period + cur_env_slide + sam_env_p_signed) & 0xFFFF
+        ; sam_env_p_signed: if pb_sam_env_p < 0x80 then pb_sam_env_p else pb_sam_env_p - 0x100.
+        ; In two's complement, sign-extend pb_sam_env_p as signed 8-bit:
+        ;   high byte = 0 if pb_sam_env_p < 0x80, else 0xFF.
+        ; Sum: env_period (16-bit) + cur_env_slide (16-bit signed) + sam_env_p_se (16-bit signed).
+        ; Build sam_env_p_signed_hi in m6_tmp_amp temporarily.
+        lda     pb_sam_env_p
+        bpl     @sep_pos
+        lda     #$FF
+        bne     @sep_done
+@sep_pos:
+        lda     #0
+@sep_done:
+        sta     m6_tmp_amp                  ; sam_env_p high byte (sign extension)
+
+        ; env_final = env_period + cur_env_slide + sam_env_p_se
+        clc
+        lda     pb_env_period_lo
+        adc     pb_cur_env_slide_lo
+        sta     shadow_ay + AY_R11_ENV_LO
+        lda     pb_env_period_hi
+        adc     pb_cur_env_slide_hi
+        sta     shadow_ay + AY_R12_ENV_HI
+        clc
+        lda     shadow_ay + AY_R11_ENV_LO
+        adc     pb_sam_env_p
+        sta     shadow_ay + AY_R11_ENV_LO
+        lda     shadow_ay + AY_R12_ENV_HI
+        adc     m6_tmp_amp                  ; sign-extension high byte
+        sta     shadow_ay + AY_R12_ENV_HI
+
+        ; R13 = env_shape (sentinel $FF = no write).
+        ; In Python the write happens unconditionally. We do the same; R13 will be
+        ; $FF for frames 0 until any setenv opcode runs. This is fine — VTII output
+        ; emits $FF too in those cases. (Actually no: VTII emits 0 initially. We'll
+        ; need to ensure pb_env_shape starts at 0 in init_song.)
+        lda     pb_env_shape
+        sta     shadow_ay + AY_R13_ENV_SHAPE
+
+        ; Stage 5: envslide countdown
+        lda     pb_cur_env_delay
+        beq     @no_envslide
+        dec     pb_cur_env_delay
+        bne     @no_envslide
+        ; cur_env_delay just hit 0: reload + add slide
+        lda     pb_env_delay
+        sta     pb_cur_env_delay
+        clc
+        lda     pb_cur_env_slide_lo
+        adc     pb_env_slide_add_lo
+        sta     pb_cur_env_slide_lo
+        lda     pb_cur_env_slide_hi
+        adc     pb_env_slide_add_hi
+        sta     pb_cur_env_slide_hi
+@no_envslide:
+
+        ; Stage 6: write 14 AY registers to DigiMuz ($FD22/$FD23)
+        jsr     m6_write_ay_regs
+
+        ; Stage 7: advance tick_in_row
+        inc     pb_tick_in_row
+        lda     pb_tick_in_row
+        cmp     pb_speed
+        bcc     @tick_done
+        lda     #0
+        sta     pb_tick_in_row
+@tick_done:
+        rts
+
+; =============================================================================
+; m6_write_ay_regs — write all 14 shadow_ay bytes to DigiMuz
+; =============================================================================
+; Sequence: STX $FD23 (select reg) then STA $FD22 (write data) per register.
+; Uses X as register index 0..13.
+; -----------------------------------------------------------------------------
+m6_write_ay_regs:
+        ldx     #0
+@loop:
+        stx     DIGIMUZ_REG_SEL
+        lda     shadow_ay,x
+        sta     DIGIMUZ_DATA_W
+        inx
+        cpx     #14
+        bne     @loop
+        rts
+
+; =============================================================================
+; m6_decode_and_apply_row — Stage 2 of player_tick
+; =============================================================================
+; Port of simulate() lines 386-490 (the `if tick_in_row == 0` block).
+;
+; Logic:
+;   if current_line >= current_pat_len: mark all channels end_of_pattern
+;   for attempt = 0..1:
+;       all_decoded = True
+;       for ci = 0..2:
+;           if channel decoded already this row: continue
+;           if channel end_of_pattern: continue (and all_decoded keeps False indirectly)
+;           skip_counter--
+;           if skip_counter > 0: mark decoded; continue
+;           call player_decode_row (M5a, returns A=0 ok / A=1 eop)
+;           if eop: continue (will trigger pattern advance)
+;           else: apply_row_to_channel; consume row spec_cmd / env_period / noise_period
+;       if all decoded: current_line++; break
+;       if all end_of_pattern: position_idx++; load next pattern; retry
+;       else: break (some channels stuck; rare)
+; -----------------------------------------------------------------------------
+m6_decode_and_apply_row:
+        ; Reset attempt counter (used by pattern-advance retry)
+        lda     #0
+        sta     ZP_SCRATCH3
+        ; current_line >= current_pat_len ?
+        lda     pb_current_line
+        cmp     pb_current_pat_len
+        bcc     @inrange
+        ; Out of range: mark all channels end_of_pattern
+        lda     #1
+        sta     ch_end_flag_a
+        sta     ch_end_flag_b
+        sta     ch_end_flag_c
+@inrange:
+        ; decoded_this_tick[3] = {0,0,0}
+        lda     #0
+        sta     m6_decoded
+        sta     m6_decoded+1
+        sta     m6_decoded+2
+
+        ldx     #0                          ; attempt counter
+@attempt_loop:
+        ; Try each channel in turn
+        lda     #0
+        sta     m6_tmp_ch_idx
+@ch_loop:
+        ; Already decoded?
+        ldx     m6_tmp_ch_idx
+        lda     m6_decoded,x
+        bne     @next_ch
+        ; End of pattern?
+        lda     ch_end_flag_a,x
+        bne     @next_ch
+        ; Decrement skip counter
+        dec     ch_skip_counter_a,x
+        lda     ch_skip_counter_a,x
+        beq     @do_decode
+        ; skip_counter > 0: mark decoded, no actual decode needed
+        lda     #1
+        sta     m6_decoded,x
+        jmp     @next_ch
+@do_decode:
+        ; Call player_decode_row(A=ch_idx). Returns A=0 ok, A=1 eop.
+        txa
+        jsr     player_decode_row
+        cmp     #1
+        beq     @next_ch                    ; eop: don't mark decoded, retry next attempt
+        ; Decoded row OK. Apply row to channel state.
+        ldx     m6_tmp_ch_idx
+        lda     #1
+        sta     m6_decoded,x                ; mark decoded
+        ; Reset skip_counter to nn_skip
+        lda     ch_nn_skip_a,x
+        sta     ch_skip_counter_a,x
+        ; apply_row_to_channel(ch, row, mod): consume row_out_ch_<x>
+        jsr     m6_apply_row_to_channel
+        ; Apply env_period / env_shape / noise_period from row
+        jsr     m6_apply_row_globals
+        ; Apply spec_cmd
+        jsr     m6_apply_row_spec_cmd
+@next_ch:
+        ldx     m6_tmp_ch_idx
+        inx
+        stx     m6_tmp_ch_idx
+        cpx     #3
+        bne     @ch_loop
+
+        ; All channels decoded?
+        lda     m6_decoded
+        and     m6_decoded+1
+        and     m6_decoded+2
+        beq     @not_all_decoded
+        ; All decoded: current_line++; done
+        inc     pb_current_line
+        rts
+@not_all_decoded:
+        ; If all channels at end_of_pattern, advance position
+        lda     ch_end_flag_a
+        and     ch_end_flag_b
+        and     ch_end_flag_c
+        beq     @some_stuck
+        ; All ended: load next pattern
+        jsr     m6_advance_position
+        ; After advance, retry decode (one more attempt)
+        inc     m6_tmp_ch_idx               ; placeholder - reuse as attempt counter
+        ; Actually we need a real attempt counter. Use scratch.
+        ; Bail out: re-zero decoded[] and re-loop (limit 2 attempts)
+        cpx     #1                          ; X holds attempt counter? lost above.
+        ; We'll use ZP_SCRATCH3 for the attempt counter.
+        lda     ZP_SCRATCH3
+        cmp     #1
+        bcs     @bail
+        inc     ZP_SCRATCH3
+        ; reset decoded[] and re-loop
+        lda     #0
+        sta     m6_decoded
+        sta     m6_decoded+1
+        sta     m6_decoded+2
+        jmp     @attempt_loop
+@some_stuck:
+@bail:
+        ; Some channels stuck (rare malformed). Force current_line++ to make progress.
+        inc     pb_current_line
+        rts
+
+; =============================================================================
+; m6_advance_position — advance position_idx, wrap to loop_pos, load pattern
+; =============================================================================
+; Sets pb_end_of_song flag if wrapped. Loads new pattern via player_init_pattern.
+; Resets current_line to 0, pb_noise_period to 0 (per VTII semantics).
+; -----------------------------------------------------------------------------
+m6_advance_position:
+        inc     pb_position_idx
+        lda     pb_position_idx
+        cmp     pt3_num_positions
+        bcc     @no_wrap
+        ; Wrap to loop_pos
+        lda     pt3_loop_position
+        sta     pb_position_idx
+        lda     #1
+        sta     pb_end_of_song
+@no_wrap:
+        ; Read positions[position_idx] via M5_PTR
+        lda     pt3_position_list_lo
+        sta     M5_PTR_LO
+        lda     pt3_position_list_hi
+        sta     M5_PTR_HI
+        ldy     pb_position_idx
+        lda     (M5_PTR_LO),y               ; pat_num * 3
+        jsr     div_by_3
+        jsr     player_init_pattern
+        ; Recompute pattern length for new pattern
+        jsr     m6_compute_pat_len
+        sta     pb_current_pat_len
+        ; Reset state
+        lda     #0
+        sta     pb_current_line
+        sta     pb_noise_period
+        ; player_init_pattern already cleared end_flag_* and reset skip_counter_*
+        rts
+; =============================================================================
+; m6_compute_pat_len — port of Python _compute_pattern_length (VTII trfuncs.pas
+; lines 2284-2312). Returns A = pattern length (number of rows).
+;
+; Algorithm:
+;   i = 0
+;   loop:
+;     for k in 0,1,2:
+;       skip_counter[k] -= 1
+;       if skip_counter[k] == 0:
+;         if k == 0 and *stream_A == $00: quit (length = i)
+;         call player_decode_row(k)  ; advance pointer, set nn_skip
+;         skip_counter[k] = nn_skip[k]
+;     if quit: break
+;     i += 1
+;   return i
+;
+; Destructive on ZP_STREAM_*, ch_nn_skip_*, ch_skip_counter_*, ch_end_flag_*.
+; Caller must save/restore if those matter — m6_compute_pat_len does it here.
+; =============================================================================
+m6_compute_pat_len:
+        ; --- Save state ---
+        ldx     #0
+@save_s:
+        lda     ZP_STREAM_A_LO,x           ; $D8 + x = ZP stream
+        sta     compat_save_stream_lo,x
+        inx
+        cpx     #6
+        bne     @save_s
+
+        ldx     #0
+@save_ns:
+        lda     ch_nn_skip_a,x
+        sta     compat_save_nn_skip,x
+        lda     ch_skip_counter_a,x
+        sta     compat_save_skip_ctr,x
+        lda     ch_end_flag_a,x
+        sta     compat_save_end_flag,x
+        inx
+        cpx     #3
+        bne     @save_ns
+
+        ; --- Pre-pass: count rows ---
+        lda     #0
+        sta     compat_row_count
+
+@main_loop:
+        ; 256-row safety limit
+        lda     compat_row_count
+        cmp     #255
+        bcs     @done
+
+        ; For each channel k=0,1,2:
+        ldx     #0
+@ch_loop:
+        dec     ch_skip_counter_a,x
+        lda     ch_skip_counter_a,x
+        bne     @ch_next                    ; not time to decode this row
+
+        ; skip_counter == 0: it's this channel's turn this row
+        cpx     #0
+        bne     @do_decode                  ; only ch A triggers end-of-pattern
+
+        ; ch A: peek stream[0]. If $00, quit.
+        lda     ZP_STREAM_A_LO
+        sta     M5_PTR_LO
+        lda     ZP_STREAM_A_HI
+        sta     M5_PTR_HI
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        bne     @do_decode
+        ; End of pattern — return row count without incrementing
+        jmp     @done
+
+@do_decode:
+        ; player_decode_row(A = x)
+        txa
+        pha                                 ; save x (decode clobbers)
+        jsr     player_decode_row
+        pla
+        tax
+        ; Reset skip_counter = nn_skip
+        lda     ch_nn_skip_a,x
+        sta     ch_skip_counter_a,x
+
+@ch_next:
+        inx
+        cpx     #3
+        bne     @ch_loop
+
+        inc     compat_row_count
+        jmp     @main_loop
+
+@done:
+        ; --- Restore state ---
+        ldx     #0
+@rest_s:
+        lda     compat_save_stream_lo,x
+        sta     ZP_STREAM_A_LO,x
+        inx
+        cpx     #6
+        bne     @rest_s
+
+        ldx     #0
+@rest_ns:
+        lda     compat_save_nn_skip,x
+        sta     ch_nn_skip_a,x
+        lda     compat_save_skip_ctr,x
+        sta     ch_skip_counter_a,x
+        lda     compat_save_end_flag,x
+        sta     ch_end_flag_a,x
+        inx
+        cpx     #3
+        bne     @rest_ns
+
+        lda     compat_row_count
+        rts
+
+
+
+; =============================================================================
+; m6_apply_row_to_channel — port of apply_row_to_channel (Python L867-924)
+; =============================================================================
+; Reads row_out_ch_<X> at m6_tmp_ch_idx, applies fields to ch_*_<x>.
+;
+; Row layout (12 bytes per channel, set by M5a player_decode_row):
+;   0: note ($FF=none, $C0=release, else 0..95)
+;   1: sample ($FF=none, else 1..31)
+;   2: env_type ($FF=none, 0..15)
+;   3: ornament ($FF=none, else 0..15)
+;   4: orn_explicit_zero (0/1)
+;   5: volume ($FF=none, else 0..15)
+;   6,7: env_period (LE; $FFFF=none)
+;   8: noise_period ($FF=none)
+;   9,10,11: spec_cmd
+; -----------------------------------------------------------------------------
+m6_apply_row_to_channel:
+        ; Set up M5_PTR to row_out_ch_<X>
+        ldx     m6_tmp_ch_idx
+        cpx     #0
+        bne     @rb
+        lda     #<row_out_ch_a
+        sta     M5_PTR_LO
+        lda     #>row_out_ch_a
+        sta     M5_PTR_HI
+        jmp     @rdone
+@rb:
+        cpx     #1
+        bne     @rc
+        lda     #<row_out_ch_b
+        sta     M5_PTR_LO
+        lda     #>row_out_ch_b
+        sta     M5_PTR_HI
+        jmp     @rdone
+@rc:
+        lda     #<row_out_ch_c
+        sta     M5_PTR_LO
+        lda     #>row_out_ch_c
+        sta     M5_PTR_HI
+@rdone:
+
+        ; --- note ---
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_note
+        cmp     #$C0
+        bne     @real_note
+        ; release: set note_released flag, keep ch.note value
+        ldx     m6_tmp_ch_idx
+        lda     ch_flags_a,x
+        ora     #%00000010                  ; bit1 = note_released
+        sta     ch_flags_a,x
+        jmp     @after_note
+@real_note:
+        ; New note triggered. Save prev_note, set note. Reset sample/orn position.
+        ; Save Current_Ton_Sliding before reset (for FeaturesLevel >= 1 portamento).
+        ldx     m6_tmp_ch_idx
+        lda     ch_cur_ton_slide_a_lo,x
+        sta     ch_saved_ton_slide_a_lo,x
+        lda     ch_cur_ton_slide_a_hi,x
+        sta     ch_saved_ton_slide_a_hi,x
+
+        lda     ch_note_a,x
+        sta     ch_prev_note_a,x
+        ldy     #0
+        lda     (M5_PTR_LO),y
+        sta     ch_note_a,x
+        ; Clear release/sound_enabled flags; set enabled.
+        lda     ch_flags_a,x
+        and     #%11110100                  ; clear bits 0,1 (released)? actually:
+                                            ; bit0=enabled, bit1=released, bit2=env_enabled, bit3=sound_enabled
+                                            ; mask &= ~bit1 (clear released), set bit0 (enabled), set bit3 (sound_enabled)
+        ora     #%00001001                  ; set bits 0 and 3
+        sta     ch_flags_a,x
+        ; Reset sample/ornament position
+        lda     #0
+        sta     ch_pos_in_sample_a,x
+        sta     ch_pos_in_ornament_a,x
+        sta     ch_amp_slide_a,x
+        sta     ch_ton_accum_a_lo,x
+        sta     ch_ton_accum_a_hi,x
+        sta     ch_env_sliding_a_lo,x
+        sta     ch_env_sliding_a_hi,x
+        sta     ch_noise_sliding_a,x
+        sta     ch_cur_ton_slide_a_lo,x
+        sta     ch_cur_ton_slide_a_hi,x
+        sta     ch_ton_sld_count_a,x
+        sta     ch_current_onoff_a,x      ; Python reset_sample_ornament: current_onoff = 0
+        ; Clear ton slide as well? Python reset_sample_ornament zeroes pos_in_sample/ornament
+        ; and amp_slide_accum/ton_accumulator/current_envelope_sliding/current_noise_sliding.
+        ; ton_slide_* are NOT reset here (they belong to effect setup, not note trigger).
+        ; current_onoff IS reset (vibrato state), bringing sound_enabled back to True via
+        ; the flag bit-3 set above.
+@no_note:
+@after_note:
+
+        ; --- sample ---
+        ldy     #1
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_sample
+        ldx     m6_tmp_ch_idx
+        sta     ch_sample_num_a,x
+@no_sample:
+
+        ; --- ornament ---
+        ldy     #3
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_orn
+        ldx     m6_tmp_ch_idx
+        sta     ch_ornament_num_a,x
+        lda     #0
+        sta     ch_pos_in_ornament_a,x
+        jmp     @after_orn
+@no_orn:
+        ; orn_expl_zero?
+        ldy     #4
+        lda     (M5_PTR_LO),y
+        beq     @after_orn
+        ldx     m6_tmp_ch_idx
+        lda     #0
+        sta     ch_ornament_num_a,x
+        sta     ch_pos_in_ornament_a,x
+@after_orn:
+
+        ; --- volume ---
+        ldy     #5
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_vol
+        ldx     m6_tmp_ch_idx
+        sta     ch_volume_a,x
+@no_vol:
+
+        ; --- env_type ---
+        ; Python: if row.env_type == 0xF: envelope_enabled=False; else: envelope_enabled=True
+        ldy     #2
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_env_type
+        cmp     #$0F
+        beq     @env_off
+        ; envelope_enabled = True (set bit2 of flags)
+        ldx     m6_tmp_ch_idx
+        lda     ch_flags_a,x
+        ora     #%00000100
+        sta     ch_flags_a,x
+        jmp     @no_env_type
+@env_off:
+        ldx     m6_tmp_ch_idx
+        lda     ch_flags_a,x
+        and     #%11111011
+        sta     ch_flags_a,x
+@no_env_type:
+        rts
+
+; -----------------------------------------------------------------------------
+; m6_apply_row_globals — apply row.env_period, row.env_type→pb_env_shape,
+; row.noise_period to global state (NOT per-channel).
+; Also resets cur_env_slide/cur_env_delay if env_type in 1..14 (Python L412-417).
+; -----------------------------------------------------------------------------
+m6_apply_row_globals:
+        ; Set M5_PTR to row_out_ch_<X> (already set by apply_row? Could reuse, but
+        ; to be safe re-set it).
+        ldx     m6_tmp_ch_idx
+        cpx     #0
+        bne     @rgb
+        lda     #<row_out_ch_a
+        sta     M5_PTR_LO
+        lda     #>row_out_ch_a
+        sta     M5_PTR_HI
+        jmp     @rgdone
+@rgb:
+        cpx     #1
+        bne     @rgc
+        lda     #<row_out_ch_b
+        sta     M5_PTR_LO
+        lda     #>row_out_ch_b
+        sta     M5_PTR_HI
+        jmp     @rgdone
+@rgc:
+        lda     #<row_out_ch_c
+        sta     M5_PTR_LO
+        lda     #>row_out_ch_c
+        sta     M5_PTR_HI
+@rgdone:
+
+        ; env_period (offsets 6,7) — $FFFF = none
+        ldy     #6
+        lda     (M5_PTR_LO),y
+        sta     m6_tmp_amp                  ; tmp lo
+        iny
+        lda     (M5_PTR_LO),y
+        sta     m6_tmp_note                 ; tmp hi
+        cmp     #$FF
+        bne     @ep_set
+        lda     m6_tmp_amp
+        cmp     #$FF
+        beq     @no_envp
+@ep_set:
+        lda     m6_tmp_amp
+        sta     pb_env_period_lo
+        lda     m6_tmp_note
+        sta     pb_env_period_hi
+@no_envp:
+
+        ; env_type 1..14 → pb_env_shape, reset cur_env_slide / cur_env_delay
+        ldy     #2
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_es
+        cmp     #1
+        bcc     @no_es
+        cmp     #15
+        bcs     @no_es
+        sta     pb_env_shape
+        lda     #0
+        sta     pb_cur_env_slide_lo
+        sta     pb_cur_env_slide_hi
+        sta     pb_cur_env_delay
+@no_es:
+
+        ; noise_period (offset 8)
+        ldy     #8
+        lda     (M5_PTR_LO),y
+        cmp     #$FF
+        beq     @no_np
+        sta     pb_noise_period
+@no_np:
+        rts
+
+; -----------------------------------------------------------------------------
+; m6_apply_row_spec_cmd — port of Python spec_cmd dispatch (L440-555).
+; Reads row_out_ch_<X> offsets 9..13:
+;   +9  spec_cmd
+;   +10 spec_param0 (raw[0])
+;   +11 spec_param1 (raw[1])
+;   +12 spec_param2 (raw[2] for cmd 0x01/0x08, or raw[4] for cmd 0x02 PORTM)
+;   +13 spec_param3 (raw[3] — relevant only for cmd 0x02 PORTM = amount_lo)
+;
+; Supported commands:
+;   0x01 GLISS   — tone-slide (pos or neg)
+;   0x02 PORTM   — portamento to target note
+;   0x03 SMPOS   — set sample position
+;   0x04 ORPOS   — set ornament position
+;   0x05 VIBRT   — vibrato on/off + delay
+;   0x08 ENGLS   — envelope slide (full signed-16)
+;   0x09 DELAY   — speed change
+; -----------------------------------------------------------------------------
+m6_apply_row_spec_cmd:
+        ; M5_PTR already points to row_out
+        ldy     #9
+        lda     (M5_PTR_LO),y
+        bne     @have_cmd
+        rts
+@have_cmd:
+        sta     m6_tmp_amp                  ; cmd
+        iny
+        lda     (M5_PTR_LO),y
+        sta     m6_tmp_note                 ; param0
+        iny
+        lda     (M5_PTR_LO),y
+        sta     m6_tmp_tone_lo              ; param1
+        ; (param2/param3 read on demand by handlers that need them)
+
+        lda     m6_tmp_amp
+
+        ; ---- cmd 0x09 DELAY (speed change) ----
+        cmp     #$09
+        bne     @not_spd
+        lda     m6_tmp_note
+        bne     @spd_set
+        rts
+@spd_set:
+        sta     pb_speed
+        rts
+@not_spd:
+
+        ; ---- cmd 0x03 SMPOS (sample position) ----
+        cmp     #$03
+        bne     @not_smpos
+        lda     m6_tmp_note
+        ldx     m6_tmp_ch_idx
+        sta     ch_pos_in_sample_a,x
+        rts
+@not_smpos:
+
+        ; ---- cmd 0x04 ORPOS (ornament position) ----
+        cmp     #$04
+        bne     @not_orpos
+        lda     m6_tmp_note
+        ldx     m6_tmp_ch_idx
+        sta     ch_pos_in_ornament_a,x
+        rts
+@not_orpos:
+
+        ; ---- cmd 0x05 VIBRT (vibrato on/off + delay) ----
+        cmp     #$05
+        bne     @not_vib
+        lda     m6_tmp_tone_lo              ; param1 (low nibble target)
+        and     #$0F
+        ldx     m6_tmp_ch_idx
+        sta     ch_offon_delay_a,x
+        lda     m6_tmp_note                 ; param0
+        and     #$0F
+        sta     ch_onoff_delay_a,x
+        sta     ch_current_onoff_a,x
+        lda     #0
+        sta     ch_ton_sld_count_a,x
+        sta     ch_cur_ton_slide_a_lo,x
+        sta     ch_cur_ton_slide_a_hi,x
+        rts
+@not_vib:
+
+        ; ---- cmd 0x01 GLISS (tone slide pos/neg) ----
+        cmp     #$01
+        bne     @not_gliss
+        ; Python:
+        ;   delay = raw[0]; amount = signed16(raw[1] | raw[2]<<8)
+        ;   if delay==0 and features_level>=2: delay=1
+        ;   ton_slide_delay = ton_slide_count = delay
+        ;   ton_slide_step = amount  (signed)
+        ;   ton_slide_type = 0
+        ;   current_onoff = 0
+        ldx     m6_tmp_ch_idx
+        lda     m6_tmp_note                 ; delay
+        bne     @gls_have_delay
+        ; delay==0: bump to 1 only if features_level >= 2
+        lda     pt3_features_level
+        cmp     #2
+        bcc     @gls_zero_delay             ; level 0 or 1: keep 0
+        lda     #1
+        jmp     @gls_store_delay
+@gls_zero_delay:
+        lda     #0
+@gls_store_delay:
+        sta     ch_ton_sld_delay_a,x
+        sta     ch_ton_sld_count_a,x
+        jmp     @gls_after_delay
+@gls_have_delay:
+        sta     ch_ton_sld_delay_a,x
+        sta     ch_ton_sld_count_a,x
+@gls_after_delay:
+        lda     m6_tmp_tone_lo              ; param1 = amount_lo
+        sta     ch_ton_sld_step_a_lo,x
+        ldy     #12
+        lda     (M5_PTR_LO),y               ; param2 = amount_hi
+        sta     ch_ton_sld_step_a_hi,x
+        lda     #0
+        sta     ch_ton_sld_type_a,x
+        sta     ch_current_onoff_a,x
+        rts
+@not_gliss:
+
+        ; ---- cmd 0x02 PORTM (portamento to note) ----
+        cmp     #$02
+        beq     @do_portm
+        jmp     @not_portm
+@do_portm:
+        ; Python:
+        ;   delay = raw[0]; amount = signed16(raw[3] | raw[4]<<8)  (we have raw[3]=p3, raw[4]=p2)
+        ;   abs_amount = |amount|
+        ;   apply_portamento = (row.note != None and != release) OR (no note AND fl>=1)
+        ;   if apply and ch.note != None:
+        ;     prev_note = ch.prev_note ?? ch.note  (already set by apply_row_to_channel)
+        ;     target = ch.note (current)
+        ;     ton_slide_delay/count = delay
+        ;     ton_slide_delta = note_table[target] - note_table[prev]
+        ;     slide_to_note = target
+        ;     ch.note = prev_note  (revert)
+        ;     if fl>=1: current_ton_sliding = saved_ton_sliding
+        ;     step = abs_amount; if (delta - sliding < 0): step = -step
+        ;     ton_slide_step = step
+        ;     ton_slide_type = 1
+        ;     current_onoff = 0
+        ;
+        ; In M6 the M5a row_note can be checked: if (M5_PTR),y at offset 0 != $FF
+        ; AND != $FE (release), then "new note this row".
+        ;   $FF = no-note sentinel
+        ;   release: M5a sets ch_flags bit released=1, note retained. Hmm.
+        ;   Actually our M5a writes row_note as raw note value if present, $FF if absent,
+        ;   and a release row triggers a different handler.  Let's re-check: when there's
+        ;   a release ('R--'), row.note in Python = 'release' but our M5a row_out[0] = $FF
+        ;   per fill_sentinels (since release is handled via env_type/flags rather than note).
+        ;   Simpler heuristic: row_note != $FF means "new note this row".
+        ;   For features_level >= 1, "no note this row" also triggers portamento (chain).
+        ldy     #0
+        lda     (M5_PTR_LO),y               ; row_note
+        cmp     #$FF
+        bne     @portm_apply                ; new note: apply unconditionally
+        ; no note: apply only if features_level >= 1
+        lda     pt3_features_level
+        bne     @portm_apply                ; level >= 1: chain portamento
+        jmp     @portm_skip                 ; level 0: no note, no chain
+@portm_apply:
+        ; ch.note != $FF check
+        ldx     m6_tmp_ch_idx
+        lda     ch_note_a,x
+        cmp     #$FF
+        bne     @portm_continue
+        jmp     @portm_skip
+@portm_continue:
+
+        ; ton_slide_delay/count = delay (param0)
+        lda     m6_tmp_note
+        sta     ch_ton_sld_delay_a,x
+        sta     ch_ton_sld_count_a,x
+
+        ; Compute delta = note_table[target] - note_table[prev_note]
+        ; target = ch.note (current); prev = ch.prev_note (set by apply_row_to_channel)
+        ; Both are already in BSS.
+        lda     ch_note_a,x
+        jsr     m6_lookup_note_table        ; returns ZP_TEMP2: lo/hi = freq[note]
+        lda     ZP_TEMP2_LO
+        sta     m6_tmp_orn_ptr_lo           ; target_lo (scratch)
+        lda     ZP_TEMP2_HI
+        sta     m6_tmp_orn_ptr_hi           ; target_hi
+        ldx     m6_tmp_ch_idx
+        lda     ch_prev_note_a,x
+        jsr     m6_lookup_note_table        ; ZP_TEMP2: lo/hi = freq[prev]
+        ; delta = target - prev (signed 16)
+        sec
+        lda     m6_tmp_orn_ptr_lo
+        sbc     ZP_TEMP2_LO
+        ldx     m6_tmp_ch_idx
+        sta     ch_ton_sld_delta_a_lo,x
+        lda     m6_tmp_orn_ptr_hi
+        sbc     ZP_TEMP2_HI
+        sta     ch_ton_sld_delta_a_hi,x
+
+        ; slide_to_note = target_note (= current ch_note)
+        lda     ch_note_a,x
+        sta     ch_slide_to_note_a,x
+        ; ch.note = prev_note (revert)
+        lda     ch_prev_note_a,x
+        sta     ch_note_a,x
+
+        ; if features_level >= 1: current_ton_sliding = saved_ton_sliding
+        lda     pt3_features_level
+        beq     @portm_no_restore
+        lda     ch_saved_ton_slide_a_lo,x
+        sta     ch_cur_ton_slide_a_lo,x
+        lda     ch_saved_ton_slide_a_hi,x
+        sta     ch_cur_ton_slide_a_hi,x
+@portm_no_restore:
+
+        ; abs_amount = |raw[3..4]|; raw[3]=param3 (offset 13), raw[4]=param2 (offset 12)
+        ldy     #13
+        lda     (M5_PTR_LO),y               ; raw[3] = amount_lo
+        sta     m6_tmp_orn_ptr_lo           ; abs_lo (will negate if hi.bit7=1)
+        ldy     #12
+        lda     (M5_PTR_LO),y               ; raw[4] = amount_hi
+        sta     m6_tmp_orn_ptr_hi
+        bpl     @portm_pos
+        ; negative: negate (two's complement) for absolute value
+        sec
+        lda     #0
+        sbc     m6_tmp_orn_ptr_lo
+        sta     m6_tmp_orn_ptr_lo
+        lda     #0
+        sbc     m6_tmp_orn_ptr_hi
+        sta     m6_tmp_orn_ptr_hi
+@portm_pos:
+        ; abs_amount in m6_tmp_orn_ptr (lo,hi)
+
+        ; step = abs; if (delta - cur_sliding) < 0 then step = -step
+        ; Compute (delta - cur_sliding) sign:
+        ldx     m6_tmp_ch_idx
+        sec
+        lda     ch_ton_sld_delta_a_lo,x
+        sbc     ch_cur_ton_slide_a_lo,x
+        lda     ch_ton_sld_delta_a_hi,x
+        sbc     ch_cur_ton_slide_a_hi,x
+        bpl     @portm_step_pos             ; result >= 0: step stays positive
+        ; result < 0: negate step
+        sec
+        lda     #0
+        sbc     m6_tmp_orn_ptr_lo
+        sta     m6_tmp_orn_ptr_lo
+        lda     #0
+        sbc     m6_tmp_orn_ptr_hi
+        sta     m6_tmp_orn_ptr_hi
+@portm_step_pos:
+        lda     m6_tmp_orn_ptr_lo
+        sta     ch_ton_sld_step_a_lo,x
+        lda     m6_tmp_orn_ptr_hi
+        sta     ch_ton_sld_step_a_hi,x
+
+        lda     #1
+        sta     ch_ton_sld_type_a,x
+        lda     #0
+        sta     ch_current_onoff_a,x
+@portm_skip:
+        rts
+@not_portm:
+
+        ; ---- cmd 0x08 ENGLS (envelope slide) ----
+        cmp     #$08
+        bne     @no_cmd
+        lda     m6_tmp_note                 ; delay = param0
+        sta     pb_env_delay
+        sta     pb_cur_env_delay
+        lda     m6_tmp_tone_lo              ; param1 = amount_lo
+        sta     pb_env_slide_add_lo
+        ldy     #12
+        lda     (M5_PTR_LO),y               ; param2 = amount_hi
+        sta     pb_env_slide_add_hi
+@no_cmd:
+        rts
+
+; -----------------------------------------------------------------------------
+; m6_lookup_note_table — A = note (0..95), returns 16-bit freq in ZP_TEMP2.
+; Clamps note to [0, 95]. Clobbers A, X, Y. Preserves m6_tmp_ch_idx contract
+; (caller must reload X if needed).
+; -----------------------------------------------------------------------------
+m6_lookup_note_table:
+        cmp     #96
+        bcc     @lnt_ok
+        lda     #95
+@lnt_ok:
+        asl     a                           ; *2 (note_table = 2 bytes/entry)
+        tay
+        lda     note_table,y
+        sta     ZP_TEMP2_LO
+        iny
+        lda     note_table,y
+        sta     ZP_TEMP2_HI
+        rts
+
+; =============================================================================
+; m6_compute_channel — Stage 3 per-channel compute (Python L587-815)
+; =============================================================================
+; Input: m6_tmp_ch_idx (0/1/2)
+; Output: shadow_ay R0..R5 (tone period), R8/R9/R10 (amplitude),
+;         m6_tmp_mixer_bits (accumulated)
+; Side effects: advances ch_pos_in_sample, ch_pos_in_ornament,
+;               runs ton_slide / vibrato countdowns.
+;
+; STUB FOR NOW — outputs zeros so harness can sanity-check Stage 4 path.
+; -----------------------------------------------------------------------------
+; -----------------------------------------------------------------------------
+; m6_get_sample_tick_ptr — point ZP_SAMPLE_BASE_LO/HI at the current sample
+; tick (4 bytes) for channel m6_tmp_ch_idx.
+;
+; Computes:
+;   sample_addr = pt3_base + word_at(pt3_sample_table + sample_num*2)
+;   tick_addr = sample_addr + 2 + pos_in_sample * 4
+;
+; Returns A=0 if no sample (sample_num=0 or table entry is zero).
+; Otherwise A=1 and ZP_SAMPLE_BASE_LO/HI points at byte0 of the tick.
+; -----------------------------------------------------------------------------
+m6_get_sample_tick_ptr:
+        ldx     m6_tmp_ch_idx
+        lda     ch_sample_num_a,x
+        bne     @have_samp
+        lda     #0
+        rts
+@have_samp:
+        ; sample_num × 2 → table offset
+        asl     a
+        tay
+        ; Read pt3_sample_table[Y] (file-relative LE)
+        lda     pt3_sample_table_lo
+        sta     M5_PTR_LO
+        lda     pt3_sample_table_hi
+        sta     M5_PTR_HI
+        lda     (M5_PTR_LO),y                ; lo byte of file-relative ptr
+        sta     ZP_SAMPLE_BASE_LO
+        iny
+        lda     (M5_PTR_LO),y
+        sta     ZP_SAMPLE_BASE_HI
+        ; Convert file-relative to absolute by adding pt3_base
+        clc
+        lda     ZP_SAMPLE_BASE_LO
+        adc     pt3_base_lo
+        sta     ZP_SAMPLE_BASE_LO
+        lda     ZP_SAMPLE_BASE_HI
+        adc     pt3_base_hi
+        sta     ZP_SAMPLE_BASE_HI
+        ; Add 2 (skip header loop_pos + length)
+        clc
+        lda     ZP_SAMPLE_BASE_LO
+        adc     #2
+        sta     ZP_SAMPLE_BASE_LO
+        bcc     @no_carry
+        inc     ZP_SAMPLE_BASE_HI
+@no_carry:
+        ; Add pos_in_sample × 4
+        ldx     m6_tmp_ch_idx
+        lda     ch_pos_in_sample_a,x
+        ; Zero high byte before rol (otherwise rol carries garbage from previous use)
+        ldy     #0
+        sty     m6_tmp_amp
+        asl     a
+        rol     m6_tmp_amp                   ; high byte of *4 (overflow goes here)
+        asl     a
+        rol     m6_tmp_amp
+        ; Result: A = (pos*4) low, m6_tmp_amp = (pos*4) high
+        ; pos_in_sample is 0..63 typically, so pos*4 fits in 8 bits but be safe
+        clc
+        adc     ZP_SAMPLE_BASE_LO
+        sta     ZP_SAMPLE_BASE_LO
+        lda     m6_tmp_amp
+        adc     ZP_SAMPLE_BASE_HI
+        sta     ZP_SAMPLE_BASE_HI
+        lda     #1
+        rts
+
+; -----------------------------------------------------------------------------
+; m6_get_ornament_offset — return signed ornament offset for channel.
+; Input: m6_tmp_ch_idx
+; Output: A = offset (signed 8-bit), or 0 if no ornament active.
+; Sets m6_tmp_orn_ptr_lo/hi to ornament header for use by position advance.
+; -----------------------------------------------------------------------------
+m6_get_ornament_offset:
+        ldx     m6_tmp_ch_idx
+        lda     ch_ornament_num_a,x
+        bne     @have_orn
+        lda     #0
+        rts
+@have_orn:
+        ; orn_addr = pt3_base + word_at(pt3_ornament_table + orn_num*2)
+        asl     a
+        tay
+        lda     pt3_ornament_table_lo
+        sta     M5_PTR_LO
+        lda     pt3_ornament_table_hi
+        sta     M5_PTR_HI
+        lda     (M5_PTR_LO),y
+        sta     ZP_ORN_BASE_LO
+        iny
+        lda     (M5_PTR_LO),y
+        sta     ZP_ORN_BASE_HI
+        clc
+        lda     ZP_ORN_BASE_LO
+        adc     pt3_base_lo
+        sta     ZP_ORN_BASE_LO
+        lda     ZP_ORN_BASE_HI
+        adc     pt3_base_hi
+        sta     ZP_ORN_BASE_HI
+        ; Save header pointer (loop_pos + length at offset 0,1)
+        lda     ZP_ORN_BASE_LO
+        sta     m6_tmp_orn_ptr_lo
+        lda     ZP_ORN_BASE_HI
+        sta     m6_tmp_orn_ptr_hi
+        ; Skip header (2 bytes), index by pos_in_ornament
+        clc
+        adc     #0                           ; preserve flags? no, prevous lda was hi byte
+        ; Actually load the value:
+        ;   value = byte_at(orn_addr + 2 + pos_in_ornament)
+        ldx     m6_tmp_ch_idx
+        lda     ch_pos_in_ornament_a,x
+        clc
+        adc     #2
+        tay
+        lda     (ZP_ORN_BASE_LO),y
+        rts
+
+; =============================================================================
+; m6_compute_channel — port of Python simulate() L580-815 per-channel block
+; =============================================================================
+; Input: m6_tmp_ch_idx (0/1/2)
+;
+; Phases:
+;   A. Branch on ch.flags:
+;        - bit0 enabled clear OR ch.note == $FF: amp=0 tone=0 (init silence)
+;        - bit1 released set: amp=0 tone=skip (keep prev), continue advance
+;        - bit3 sound_enabled clear (vibrato muted): amp=0 tone=skip,
+;          run ton_slide+vibrato countdowns, advance NOTHING
+;        - else: full computation
+;   B. Full computation (the "else" branch, ~150 lines):
+;        - orn_offset via m6_get_ornament_offset
+;        - effective_note = clamp(ch.note + orn_offset, 0..95)
+;        - base_period = note_table[effective_note]
+;        - sample tick fetch via m6_get_sample_tick_ptr
+;        - sample_tone_offset = ton_accum + tick.tone_offset
+;          if tone_accumulate: ton_accum = sample_tone_offset
+;        - noise/env sliding (sticky pb_sam_noise / pb_sam_env_p)
+;        - amp slide (if byte0 bit7)
+;        - effective_vol = sample_volume + amp_slide_accum, clamp
+;        - combined_vol = volume_table[(ch.volume<<4) | effective_vol]
+;        - amp_reg = combined_vol | (env_enabled & sample_env_on ? 0x10 : 0)
+;        - mixer bits (T disable bit ci, N disable bit ci+3)
+;        - tone_period = (base_period + sample_tone_offset + cur_ton_slide) & 0xFFF
+;   C. Write tone_period to AY (R0..R5 by ch).
+;   D. Write amp_reg to AY (R8..R10 by ch).
+;   E. Run ton_slide countdown + vibrato countdown.
+;   F. Advance pos_in_sample / pos_in_ornament (only if sound_enabled & not released).
+; -----------------------------------------------------------------------------
+m6_compute_channel:
+        ; ===== Phase A: branch on flags =====
+        ldx     m6_tmp_ch_idx
+        lda     ch_flags_a,x
+        and     #%00000001                   ; bit0 = enabled
+        bne     @maybe_active
+        ; Channel never played: amp=0, tone=0
+        jmp     @write_silence
+
+@maybe_active:
+        ; Check ch.note != $FF (if note still $FF, treat as never played)
+        lda     ch_note_a,x
+        cmp     #$FF
+        bne     @check_released
+        jmp     @write_silence
+
+@check_released:
+        lda     ch_flags_a,x
+        and     #%00000010                   ; bit1 = released
+        beq     @check_sound
+        ; Released: amp=0, tone=skip (keep prev), still advance sample/orn
+        lda     #0
+        sta     m6_tmp_amp
+        ; Skip tone_period write — handled by branching to @write_amp_only_advance
+        jmp     @released_branch
+
+@check_sound:
+        lda     ch_flags_a,x
+        and     #%00001000                   ; bit3 = sound_enabled
+        bne     @full_compute
+        ; sound_enabled clear (vibrato muted): amp=0, tone=skip, run countdowns only
+        lda     #0
+        sta     m6_tmp_amp
+        jmp     @vibrato_muted_branch
+
+@write_silence:
+        ; Tone period regs ci*2, ci*2+1 = 0
+        ldx     m6_tmp_ch_idx
+        txa
+        asl     a
+        tay
+        lda     #0
+        sta     shadow_ay,y
+        iny
+        sta     shadow_ay,y
+        ; Amp reg 8+ci = 0
+        txa
+        clc
+        adc     #8
+        tay
+        lda     #0
+        sta     shadow_ay,y
+        rts
+
+; ===== Phase B: full computation =====
+@full_compute:
+        ; --- Compute ornament offset ---
+        jsr     m6_get_ornament_offset
+        sta     m6_tmp_amp                   ; orn_offset (signed)
+
+        ; --- effective_note = clamp(ch.note + orn_offset, 0..95) ---
+        ldx     m6_tmp_ch_idx
+        clc
+        lda     ch_note_a,x
+        adc     m6_tmp_amp                   ; signed add
+        ; Clamp to 0..95. After signed add, A may be:
+        ;   - negative (>=$80): clamp to 0
+        ;   - >95: clamp to 95
+        bpl     @check_high
+        lda     #0
+        jmp     @en_done
+@check_high:
+        cmp     #96
+        bcc     @en_done
+        lda     #95
+@en_done:
+        ; A = effective_note. Index into note_table (2 bytes per entry).
+        asl     a                            ; *2
+        tay
+        lda     note_table,y
+        sta     m6_tmp_tone_lo               ; base_period lo
+        iny
+        lda     note_table,y
+        sta     m6_tmp_tone_hi               ; base_period hi
+
+        ; --- Initialize defaults: sample_volume=$F, T=on, N=off, env=off ---
+        lda     #$0F
+        sta     m6_tmp_note                  ; alias: sample_volume
+        ; Mixer disable bits stored in X temporarily? Use ZP_SCRATCH1 = sample_t_off (bit set if tone OFF)
+        ; ZP_SCRATCH2 = sample_n_off
+        ; ZP_SCRATCH3 = sample_env_on
+        lda     #0
+        sta     ZP_SCRATCH1                  ; tone_off
+        lda     #1
+        sta     ZP_SCRATCH2                  ; noise_off (default no noise = off)
+        lda     #0
+        sta     ZP_SCRATCH3                  ; env_on
+        sta     m6_tmp_sample_ptr_lo         ; tone_offset lo (signed 16-bit accumulator)
+        sta     m6_tmp_sample_ptr_hi         ; tone_offset hi
+
+        ; --- Fetch sample tick ---
+        jsr     m6_get_sample_tick_ptr
+        bne     @have_sample
+        jmp     @no_sample_data
+@have_sample:
+        ; ZP_SAMPLE_BASE_LO/HI now points at byte0 of the tick (4 bytes).
+
+        ; byte0 → noise/envelope slide path + amp slide
+        ldy     #0
+        lda     (ZP_SAMPLE_BASE_LO),y
+        sta     m6_tmp_row_ptr_lo            ; alias: sample_byte0
+        iny
+        lda     (ZP_SAMPLE_BASE_LO),y
+        sta     m6_tmp_row_ptr_hi            ; alias: sample_byte1
+
+        ; sample_volume = byte1 & 0x0F
+        and     #$0F
+        sta     m6_tmp_note
+
+        ; Per Python decode_sample (pt3_sample_decoder.py L99-104):
+        ;   hi_nibble = (b1 >> 4) & 0xF
+        ;   tone_off  = hi_nibble & 0x1   = bit 4 of byte1
+        ;   noise_off = hi_nibble & 0x8   = bit 7 of byte1
+        ; Note: bit 7 also drives "envelope slide route" later (Python L692).
+        lda     m6_tmp_row_ptr_hi
+        and     #$10                         ; bit 4 = tone_off
+        beq     @t_on
+        lda     #1
+        sta     ZP_SCRATCH1
+@t_on:
+        lda     m6_tmp_row_ptr_hi
+        and     #$80                         ; bit 7 = noise_off
+        beq     @n_on
+        lda     #1
+        sta     ZP_SCRATCH2
+        jmp     @n_done
+@n_on:
+        lda     #0
+        sta     ZP_SCRATCH2
+@n_done:
+        ; sample_env_on = NOT (byte0 bit0)
+        lda     m6_tmp_row_ptr_lo
+        and     #$01
+        beq     @env_on
+        lda     #0
+        sta     ZP_SCRATCH3
+        jmp     @env_done
+@env_on:
+        lda     #1
+        sta     ZP_SCRATCH3
+@env_done:
+
+        ; tone_offset (signed 16-bit) = byte2 | (byte3 << 8)
+        ldy     #2
+        lda     (ZP_SAMPLE_BASE_LO),y
+        sta     m6_tmp_sample_ptr_lo
+        iny
+        lda     (ZP_SAMPLE_BASE_LO),y
+        sta     m6_tmp_sample_ptr_hi
+
+        ; sample_tone_offset = ch.ton_accum + tick.tone_offset
+        ldx     m6_tmp_ch_idx
+        clc
+        lda     ch_ton_accum_a_lo,x
+        adc     m6_tmp_sample_ptr_lo
+        sta     m6_tmp_sample_ptr_lo
+        lda     ch_ton_accum_a_hi,x
+        adc     m6_tmp_sample_ptr_hi
+        sta     m6_tmp_sample_ptr_hi
+        ; if byte1 bit6 (tone_accumulate): ch.ton_accum = sample_tone_offset
+        lda     m6_tmp_row_ptr_hi
+        and     #$40
+        beq     @no_ta
+        lda     m6_tmp_sample_ptr_lo
+        sta     ch_ton_accum_a_lo,x
+        lda     m6_tmp_sample_ptr_hi
+        sta     ch_ton_accum_a_hi,x
+@no_ta:
+
+        ; --- Noise/envelope sliding (Python L685-720) ---
+        ; add_to_eorn = sign-extend((byte0 >> 1) & 0x1F) from bit 4
+        lda     m6_tmp_row_ptr_lo
+        lsr     a
+        and     #$1F
+        ; sign-extend from bit 4: if (val & 0x10): val -= 0x20
+        cmp     #$10
+        bcc     @ae_pos
+        ; Negative: subtract 0x20 (i.e. OR with $E0 for 8-bit signed)
+        ora     #$E0
+@ae_pos:
+        sta     m6_tmp_amp                   ; add_to_eorn (signed 8-bit)
+
+        ; if byte1 bit7: env slide path; else: noise slide path
+        lda     m6_tmp_row_ptr_hi
+        and     #$80
+        beq     @noise_path
+        ; Env slide: j = ch.env_sliding + add_to_eorn (16-bit signed)
+        ; sign-extend add_to_eorn high byte
+        lda     m6_tmp_amp
+        bmi     @env_neg
+        lda     #0
+        sta     m6_tmp_orn_ptr_lo
+        jmp     @env_signs_done
+@env_neg:
+        lda     #$FF
+        sta     m6_tmp_orn_ptr_lo
+@env_signs_done:
+        ldx     m6_tmp_ch_idx
+        clc
+        lda     ch_env_sliding_a_lo,x
+        adc     m6_tmp_amp
+        sta     m6_tmp_orn_ptr_hi            ; j_lo (temporary)
+        lda     ch_env_sliding_a_hi,x
+        adc     m6_tmp_orn_ptr_lo
+        ; A = j_hi
+        pha                                  ; save j_hi
+        ; if envelope_accumulate (byte1 bit5): ch.env_sliding = j
+        lda     m6_tmp_row_ptr_hi
+        and     #$20
+        beq     @no_env_acc
+        ldx     m6_tmp_ch_idx
+        lda     m6_tmp_orn_ptr_hi            ; j_lo
+        sta     ch_env_sliding_a_lo,x
+        pla
+        sta     ch_env_sliding_a_hi,x
+        ; pop & re-push to keep balance? No: pla consumed it. Push again for sam_env_p calc.
+        ; Easier path: re-load from BSS:
+        lda     ch_env_sliding_a_hi,x
+        pha
+@no_env_acc:
+        ; sam_env_p = (sam_env_p + j) & 0xFF (signed 8-bit accum, only LO byte used)
+        clc
+        lda     pb_sam_env_p
+        adc     m6_tmp_orn_ptr_hi            ; j_lo
+        sta     pb_sam_env_p
+        pla                                  ; discard j_hi
+        jmp     @slide_done
+
+@noise_path:
+        ; sam_noise = (ch.noise_sliding + add_to_eorn) & 0xFF
+        ldx     m6_tmp_ch_idx
+        clc
+        lda     ch_noise_sliding_a,x
+        adc     m6_tmp_amp
+        sta     pb_sam_noise
+        ; if noise_accumulate (byte1 bit5): ch.noise_sliding = sam_noise
+        lda     m6_tmp_row_ptr_hi
+        and     #$20
+        beq     @slide_done
+        lda     pb_sam_noise
+        sta     ch_noise_sliding_a,x
+@slide_done:
+
+        ; --- Amplitude slide (Python L725-735) ---
+        ; if byte0 bit7: bit6=direction. Slide up: clamp at +15. Down: clamp at -15.
+        lda     m6_tmp_row_ptr_lo
+        and     #$80
+        beq     @no_amp_slide
+        ldx     m6_tmp_ch_idx
+        lda     m6_tmp_row_ptr_lo
+        and     #$40
+        bne     @amp_up
+        ; Down: if amp_slide > -15: amp_slide--
+        lda     ch_amp_slide_a,x
+        cmp     #$F1                          ; -15 in two's complement
+        beq     @no_amp_slide
+        dec     ch_amp_slide_a,x
+        jmp     @no_amp_slide
+@amp_up:
+        ; Up: if amp_slide < 15: amp_slide++
+        lda     ch_amp_slide_a,x
+        cmp     #15
+        beq     @no_amp_slide
+        inc     ch_amp_slide_a,x
+@no_amp_slide:
+
+@no_sample_data:
+        ; --- effective_vol = sample_volume + amp_slide_accum, clamp [0,15] ---
+        ldx     m6_tmp_ch_idx
+        clc
+        lda     m6_tmp_note                  ; sample_volume
+        adc     ch_amp_slide_a,x             ; signed
+        ; Check < 0 (in signed 8-bit): bit 7 set
+        bpl     @ev_check_high
+        lda     #0
+        jmp     @ev_done
+@ev_check_high:
+        cmp     #16
+        bcc     @ev_done
+        lda     #15
+@ev_done:
+        sta     m6_tmp_note                  ; effective_vol
+
+        ; --- combined_vol = volume_table[(ch.volume<<4) | effective_vol] ---
+        lda     ch_volume_a,x
+        and     #$0F
+        asl     a
+        asl     a
+        asl     a
+        asl     a
+        ora     m6_tmp_note
+        tay
+        lda     volume_table,y
+        sta     m6_tmp_amp                   ; combined_vol (0..15)
+
+        ; --- amp_reg = combined_vol | (env_enabled & sample_env_on ? 0x10 : 0) ---
+        lda     ch_flags_a,x
+        and     #%00000100                   ; env_enabled
+        beq     @amp_no_env
+        lda     ZP_SCRATCH3                  ; sample_env_on
+        beq     @amp_no_env
+        lda     m6_tmp_amp
+        ora     #$10
+        sta     m6_tmp_amp
+@amp_no_env:
+
+        ; --- Mixer bits ---
+        ; If !sample_tone_on (ZP_SCRATCH1==1): mixer |= (1 << ci)
+        ; If !sample_noise_on (ZP_SCRATCH2==1): mixer |= (1 << (ci + 3))
+        lda     ZP_SCRATCH1
+        beq     @mix_n
+        ; Build (1 << ch_idx) inline
+        ldx     m6_tmp_ch_idx
+        lda     #1
+@mt_shift:
+        cpx     #0
+        beq     @mt_done
+        asl     a
+        dex
+        bne     @mt_shift
+@mt_done:
+        ora     m6_tmp_mixer_bits
+        sta     m6_tmp_mixer_bits
+@mix_n:
+        lda     ZP_SCRATCH2
+        beq     @mix_done
+        ldx     m6_tmp_ch_idx
+        lda     #%00001000                   ; bit 3
+@mn_shift:
+        cpx     #0
+        beq     @mn_done
+        asl     a
+        dex
+        bne     @mn_shift
+@mn_done:
+        ora     m6_tmp_mixer_bits
+        sta     m6_tmp_mixer_bits
+@mix_done:
+
+        ; --- tone_period = (base_period + sample_tone_offset + cur_ton_slide) & 0xFFF ---
+        ldx     m6_tmp_ch_idx
+        clc
+        lda     m6_tmp_tone_lo               ; base_period lo
+        adc     m6_tmp_sample_ptr_lo         ; sample_tone_offset lo
+        sta     m6_tmp_tone_lo
+        lda     m6_tmp_tone_hi
+        adc     m6_tmp_sample_ptr_hi
+        sta     m6_tmp_tone_hi
+        clc
+        lda     m6_tmp_tone_lo
+        adc     ch_cur_ton_slide_a_lo,x
+        sta     m6_tmp_tone_lo
+        lda     m6_tmp_tone_hi
+        adc     ch_cur_ton_slide_a_hi,x
+        and     #$0F                          ; clamp to 12 bits
+        sta     m6_tmp_tone_hi
+
+        ; --- Write tone period to AY R(2*ci), R(2*ci+1) ---
+        txa
+        asl     a
+        tay
+        lda     m6_tmp_tone_lo
+        sta     shadow_ay,y
+        iny
+        lda     m6_tmp_tone_hi
+        sta     shadow_ay,y
+
+        ; --- Write amp_reg to AY R(8+ci) ---
+        txa
+        clc
+        adc     #8
+        tay
+        lda     m6_tmp_amp
+        sta     shadow_ay,y
+
+        ; --- Run ton_slide countdown ---
+        jsr     m6_run_ton_slide_countdown
+        ; --- Run vibrato countdown ---
+        jsr     m6_run_vibrato_countdown
+
+        ; --- Advance pos_in_sample / pos_in_ornament ---
+        jsr     m6_advance_sample_orn
+        rts
+
+; ----- released branch -----
+@released_branch:
+        ; amp=0, tone unchanged. Continue sample/orn advance.
+        ldx     m6_tmp_ch_idx
+        txa
+        clc
+        adc     #8
+        tay
+        lda     #0
+        sta     shadow_ay,y
+        ; Run ton_slide / vibrato countdown? Python L596-602 says no (released branch
+        ; just keeps prev tone, doesn't run countdowns).
+        ; But sample/orn advance: also no (Python L817-825 advance is gated on
+        ; "ch.sound_enabled and not ch.note_released and ch.note is not None").
+        rts
+
+; ----- vibrato muted branch -----
+@vibrato_muted_branch:
+        ; amp=0, tone unchanged. Run ton_slide + vibrato countdowns. Then advance
+        ; sample/ornament — if the vibrato countdown just toggled SoundEnabled
+        ; back to True, Python DOES advance this tick (m6_advance_sample_orn
+        ; re-reads the flags and gates itself on sound_enabled=1).
+        ldx     m6_tmp_ch_idx
+        txa
+        clc
+        adc     #8
+        tay
+        lda     #0
+        sta     shadow_ay,y
+        jsr     m6_run_ton_slide_countdown
+        jsr     m6_run_vibrato_countdown
+        jsr     m6_advance_sample_orn
+        rts
+
+; -----------------------------------------------------------------------------
+; m6_run_ton_slide_countdown
+; if ch.ton_sld_count > 0:
+;   ch.ton_sld_count -= 1
+;   if ch.ton_sld_count == 0:
+;     ch.cur_ton_slide += ch.ton_sld_step
+;     ch.ton_sld_count = ch.ton_sld_delay
+;     if ch.ton_sld_type == 1:  # portamento
+;       reached = (step<0 and cur<=delta) or (step>=0 and cur>=delta)
+;       if reached: ch.note=slide_to_note; cnt=0; cur=0
+; -----------------------------------------------------------------------------
+m6_run_ton_slide_countdown:
+        ldx     m6_tmp_ch_idx
+        lda     ch_ton_sld_count_a,x
+        beq     @rts1
+        dec     ch_ton_sld_count_a,x
+        bne     @rts1
+        ; cnt just hit 0: apply step
+        clc
+        lda     ch_cur_ton_slide_a_lo,x
+        adc     ch_ton_sld_step_a_lo,x
+        sta     ch_cur_ton_slide_a_lo,x
+        lda     ch_cur_ton_slide_a_hi,x
+        adc     ch_ton_sld_step_a_hi,x
+        sta     ch_cur_ton_slide_a_hi,x
+        ; reload cnt
+        lda     ch_ton_sld_delay_a,x
+        sta     ch_ton_sld_count_a,x
+        ; portamento target check
+        lda     ch_ton_sld_type_a,x
+        beq     @rts1                        ; gliss: no target check
+        ; step sign?
+        lda     ch_ton_sld_step_a_hi,x
+        bmi     @neg_step
+        ; positive step: reached if cur >= delta
+        ; (cur, delta both signed 16-bit)
+        ; cmp 16-bit: subtract delta from cur, check carry & sign
+        sec
+        lda     ch_cur_ton_slide_a_lo,x
+        sbc     ch_ton_sld_delta_a_lo,x
+        lda     ch_cur_ton_slide_a_hi,x
+        sbc     ch_ton_sld_delta_a_hi,x
+        ; If result >= 0 (no borrow + positive): cur >= delta
+        bvc     @nv1
+        eor     #$80
+@nv1:
+        bmi     @rts1                        ; cur < delta
+        jmp     @port_reached
+@neg_step:
+        ; negative step: reached if cur <= delta
+        sec
+        lda     ch_ton_sld_delta_a_lo,x
+        sbc     ch_cur_ton_slide_a_lo,x
+        lda     ch_ton_sld_delta_a_hi,x
+        sbc     ch_cur_ton_slide_a_hi,x
+        bvc     @nv2
+        eor     #$80
+@nv2:
+        bmi     @rts1                        ; delta < cur, i.e. cur > delta
+@port_reached:
+        ; ch.note = slide_to_note; ch.ton_sld_count = 0; ch.cur_ton_slide = 0
+        lda     ch_slide_to_note_a,x
+        sta     ch_note_a,x
+        lda     #0
+        sta     ch_ton_sld_count_a,x
+        sta     ch_cur_ton_slide_a_lo,x
+        sta     ch_cur_ton_slide_a_hi,x
+@rts1:
+        rts
+
+; -----------------------------------------------------------------------------
+; m6_run_vibrato_countdown
+; if ch.current_onoff > 0:
+;   ch.current_onoff -= 1
+;   if ch.current_onoff == 0:
+;     ch.sound_enabled = !ch.sound_enabled
+;     ch.current_onoff = (ch.sound_enabled ? onoff_delay : offon_delay)
+; -----------------------------------------------------------------------------
+m6_run_vibrato_countdown:
+        ldx     m6_tmp_ch_idx
+        lda     ch_current_onoff_a,x
+        beq     @rts2
+        dec     ch_current_onoff_a,x
+        bne     @rts2
+        ; Toggle sound_enabled (bit3)
+        lda     ch_flags_a,x
+        eor     #%00001000
+        sta     ch_flags_a,x
+        and     #%00001000
+        beq     @use_offon
+        ; sound_enabled=1: use onoff_delay
+        lda     ch_onoff_delay_a,x
+        sta     ch_current_onoff_a,x
+        rts
+@use_offon:
+        lda     ch_offon_delay_a,x
+        sta     ch_current_onoff_a,x
+@rts2:
+        rts
+
+; -----------------------------------------------------------------------------
+; m6_advance_sample_orn
+; if sound_enabled and not released and ch.note != $FF:
+;   advance pos_in_sample (with loop_pos wrap)
+;   advance pos_in_ornament (with loop_pos wrap)
+; Sample: header has loop_pos at offset 0, length at offset 1.
+; Ornament: header has loop_pos at offset 0, length at offset 1.
+; -----------------------------------------------------------------------------
+m6_advance_sample_orn:
+        ldx     m6_tmp_ch_idx
+        lda     ch_flags_a,x
+        and     #%00001010                    ; bit1=released, bit3=sound_enabled
+        cmp     #%00001000                    ; want sound_enabled=1, released=0
+        beq     @ok_advance
+        rts
+@ok_advance:
+        lda     ch_note_a,x
+        cmp     #$FF
+        bne     @do_advance
+        rts
+
+@do_advance:
+        ; --- Advance sample ---
+        lda     ch_sample_num_a,x
+        beq     @adv_orn
+        ; Get sample header pointer (loop_pos at +0, length at +1)
+        ; ZP_SAMPLE_BASE was set by m6_get_sample_tick_ptr (advanced past header).
+        ; Need to re-fetch to get header. Save pos_in_sample to advance:
+        inc     ch_pos_in_sample_a,x
+        ; Re-fetch sample header
+        asl     a                              ; sample_num*2
+        tay
+        lda     pt3_sample_table_lo
+        sta     M5_PTR_LO
+        lda     pt3_sample_table_hi
+        sta     M5_PTR_HI
+        lda     (M5_PTR_LO),y
+        sta     ZP_SAMPLE_BASE_LO
+        iny
+        lda     (M5_PTR_LO),y
+        sta     ZP_SAMPLE_BASE_HI
+        clc
+        lda     ZP_SAMPLE_BASE_LO
+        adc     pt3_base_lo
+        sta     ZP_SAMPLE_BASE_LO
+        lda     ZP_SAMPLE_BASE_HI
+        adc     pt3_base_hi
+        sta     ZP_SAMPLE_BASE_HI
+        ; Wrap if pos_in_sample >= length.
+        ; Compute: A = pos, cmp length. C=0 -> pos<length -> no wrap.
+        lda     ch_pos_in_sample_a,x
+        ldy     #1                             ; length offset
+        cmp     (ZP_SAMPLE_BASE_LO),y
+        bcc     @sample_in_range               ; pos < length: no wrap
+        ; Wrap: pos = loop_pos
+        ldy     #0
+        lda     (ZP_SAMPLE_BASE_LO),y
+        sta     ch_pos_in_sample_a,x
+@sample_in_range:
+
+@adv_orn:
+        ; --- Advance ornament ---
+        lda     ch_ornament_num_a,x
+        beq     @adv_done
+        inc     ch_pos_in_ornament_a,x
+        asl     a                              ; orn_num*2
+        tay
+        lda     pt3_ornament_table_lo
+        sta     M5_PTR_LO
+        lda     pt3_ornament_table_hi
+        sta     M5_PTR_HI
+        lda     (M5_PTR_LO),y
+        sta     ZP_ORN_BASE_LO
+        iny
+        lda     (M5_PTR_LO),y
+        sta     ZP_ORN_BASE_HI
+        clc
+        lda     ZP_ORN_BASE_LO
+        adc     pt3_base_lo
+        sta     ZP_ORN_BASE_LO
+        lda     ZP_ORN_BASE_HI
+        adc     pt3_base_hi
+        sta     ZP_ORN_BASE_HI
+        lda     ch_pos_in_ornament_a,x
+        ldy     #1                             ; length offset
+        cmp     (ZP_ORN_BASE_LO),y
+        bcc     @orn_in_range                  ; pos < length: no wrap
+        ldy     #0
+        lda     (ZP_ORN_BASE_LO),y
+        sta     ch_pos_in_ornament_a,x
+@orn_in_range:
+@adv_done:
+        rts
+
 
 ; =============================================================================
 ; RODATA
@@ -1641,9 +3645,16 @@ pt3_position_list_hi:   .res 1
 pt3_parse_error:        .res 1
 
 ; M5a pattern decoder state
-row_out_ch_a:           .res 12
-row_out_ch_b:           .res 12
-row_out_ch_c:           .res 12
+row_out_ch_a:           .res 14
+row_out_ch_b:           .res 14
+row_out_ch_c:           .res 14
+
+; Temp state save for m6_compute_pat_len pre-pass
+compat_save_stream_lo:  .res 6       ; ZP_STREAM_A/B/C_LO/HI
+compat_save_nn_skip:    .res 3       ; ch_nn_skip_[abc]
+compat_save_skip_ctr:   .res 3       ; ch_skip_counter_[abc]
+compat_save_end_flag:   .res 3       ; ch_end_flag_[abc]
+compat_row_count:       .res 1       ; pattern length counter during pre-pass
 
 ch_nn_skip_a:           .res 1
 ch_nn_skip_b:           .res 1
@@ -1669,6 +3680,172 @@ dec_pat_mul_hi:         .res 1
 dec_pat_x2_lo:          .res 1
 dec_pat_x2_hi:          .res 1
 
+; =============================================================================
+; M6 playback engine BSS
+; =============================================================================
+
+; Per-channel state (3 channels × N bytes)
+; Fields follow Python Channel class (pt3_simulator.py L208-293).
+; Channel index convention: 0=A, 1=B, 2=C.
+
+; Note: $FF = no note yet, $C0 = released, else 0..95 (MIDI-ish)
+ch_note_a:              .res 1
+ch_note_b:              .res 1
+ch_note_c:              .res 1
+
+; Previous note (for portamento): $FF = none, else 0..95
+ch_prev_note_a:         .res 1
+ch_prev_note_b:         .res 1
+ch_prev_note_c:         .res 1
+
+; Master volume (0..15)
+ch_volume_a:            .res 1
+ch_volume_b:            .res 1
+ch_volume_c:            .res 1
+
+; Sample number (1..31, default 1 per VTII quirk)
+ch_sample_num_a:        .res 1
+ch_sample_num_b:        .res 1
+ch_sample_num_c:        .res 1
+
+; Position in sample (0..31 typical, wraps to loop_pos)
+ch_pos_in_sample_a:     .res 1
+ch_pos_in_sample_b:     .res 1
+ch_pos_in_sample_c:     .res 1
+
+; Ornament number (0..15)
+ch_ornament_num_a:      .res 1
+ch_ornament_num_b:      .res 1
+ch_ornament_num_c:      .res 1
+
+; Position in ornament
+ch_pos_in_ornament_a:   .res 1
+ch_pos_in_ornament_b:   .res 1
+ch_pos_in_ornament_c:   .res 1
+
+; Channel flags: bit0=enabled bit1=note_released bit2=envelope_enabled bit3=sound_enabled(vibrato)
+ch_flags_a:             .res 1
+ch_flags_b:             .res 1
+ch_flags_c:             .res 1
+
+; Amplitude slide accumulator (signed, from sample byte 0 bit 7)
+ch_amp_slide_a:         .res 1
+ch_amp_slide_b:         .res 1
+ch_amp_slide_c:         .res 1
+
+; Tone accumulator (16-bit, used when sample byte1 bit6 set)
+ch_ton_accum_a_lo:      .res 1
+ch_ton_accum_b_lo:      .res 1
+ch_ton_accum_c_lo:      .res 1
+ch_ton_accum_a_hi:      .res 1
+ch_ton_accum_b_hi:      .res 1
+ch_ton_accum_c_hi:      .res 1
+
+; Current envelope sliding (16-bit signed, per-channel accumulator)
+ch_env_sliding_a_lo:    .res 1
+ch_env_sliding_b_lo:    .res 1
+ch_env_sliding_c_lo:    .res 1
+ch_env_sliding_a_hi:    .res 1
+ch_env_sliding_b_hi:    .res 1
+ch_env_sliding_c_hi:    .res 1
+
+; Current noise sliding (8-bit signed)
+ch_noise_sliding_a:     .res 1
+ch_noise_sliding_b:     .res 1
+ch_noise_sliding_c:     .res 1
+
+; Ton slide effect state (gliss / portamento)
+ch_ton_sld_delay_a:     .res 1
+ch_ton_sld_delay_b:     .res 1
+ch_ton_sld_delay_c:     .res 1
+ch_ton_sld_count_a:     .res 1
+ch_ton_sld_count_b:     .res 1
+ch_ton_sld_count_c:     .res 1
+ch_ton_sld_step_a_lo:   .res 1
+ch_ton_sld_step_b_lo:   .res 1
+ch_ton_sld_step_c_lo:   .res 1
+ch_ton_sld_step_a_hi:   .res 1
+ch_ton_sld_step_b_hi:   .res 1
+ch_ton_sld_step_c_hi:   .res 1
+ch_ton_sld_delta_a_lo:  .res 1
+ch_ton_sld_delta_b_lo:  .res 1
+ch_ton_sld_delta_c_lo:  .res 1
+ch_ton_sld_delta_a_hi:  .res 1
+ch_ton_sld_delta_b_hi:  .res 1
+ch_ton_sld_delta_c_hi:  .res 1
+ch_slide_to_note_a:     .res 1
+ch_slide_to_note_b:     .res 1
+ch_slide_to_note_c:     .res 1
+ch_ton_sld_type_a:      .res 1  ; 0=gliss, 1=portamento
+ch_ton_sld_type_b:      .res 1
+ch_ton_sld_type_c:      .res 1
+ch_cur_ton_slide_a_lo:  .res 1  ; accumulated tone slide (16-bit signed)
+ch_cur_ton_slide_b_lo:  .res 1
+ch_cur_ton_slide_c_lo:  .res 1
+ch_cur_ton_slide_a_hi:  .res 1
+ch_cur_ton_slide_b_hi:  .res 1
+ch_cur_ton_slide_c_hi:  .res 1
+ch_saved_ton_slide_a_lo: .res 1
+ch_saved_ton_slide_b_lo: .res 1
+ch_saved_ton_slide_c_lo: .res 1
+ch_saved_ton_slide_a_hi: .res 1
+ch_saved_ton_slide_b_hi: .res 1
+ch_saved_ton_slide_c_hi: .res 1
+
+; Vibrato state (effect 6)
+ch_onoff_delay_a:       .res 1
+ch_onoff_delay_b:       .res 1
+ch_onoff_delay_c:       .res 1
+ch_offon_delay_a:       .res 1
+ch_offon_delay_b:       .res 1
+ch_offon_delay_c:       .res 1
+ch_current_onoff_a:     .res 1
+ch_current_onoff_b:     .res 1
+ch_current_onoff_c:     .res 1
+
+; -----------------------------------------------------------------------------
+; Global playback state
+; -----------------------------------------------------------------------------
+pb_speed:               .res 1    ; from pt3_delay, modified by effect 9
+pb_tick_in_row:         .res 1    ; counts 0..pb_speed-1
+pb_position_idx:        .res 1    ; index into position list
+pb_current_line:        .res 1    ; row within current pattern
+pb_current_pat_len:     .res 1    ; length of current pattern
+pb_noise_period:        .res 1    ; R6 base (NsBase)
+pb_add_to_noise:        .res 1    ; global, sticky between frames
+pb_sam_noise:           .res 1    ; sticky, updated when ch has Mixer_Noise
+pb_sam_env_p:           .res 1    ; reset each frame, accumulated per-channel
+pb_env_period_lo:       .res 1
+pb_env_period_hi:       .res 1
+pb_env_shape:           .res 1    ; R13 pending write value, $FF = no write
+pb_end_of_song:         .res 1    ; flag when song loop hits end
+pb_env_delay:           .res 1    ; effect 9 envslide state (global)
+pb_cur_env_delay:       .res 1
+pb_env_slide_add_lo:    .res 1
+pb_env_slide_add_hi:    .res 1
+pb_cur_env_slide_lo:    .res 1
+pb_cur_env_slide_hi:    .res 1
+
+; 14 AY registers — shadow values to write to DigiMuz this frame
+; NOTE: shadow_ay already exists at the top of BSS (used by M1). We alias it.
+
+; -----------------------------------------------------------------------------
+; M6 scratch for compute
+; -----------------------------------------------------------------------------
+m6_tmp_tone_lo:         .res 1
+m6_tmp_tone_hi:         .res 1
+m6_tmp_note:            .res 1
+m6_tmp_amp:             .res 1
+m6_tmp_mixer_bits:      .res 1    ; accumulates per-channel T/N into R7
+m6_tmp_ch_idx:          .res 1    ; current channel 0/1/2
+m6_tmp_row_ptr_lo:      .res 1    ; pointer into row_out_ch_<n>
+m6_tmp_row_ptr_hi:      .res 1
+m6_tmp_sample_ptr_lo:   .res 1    ; sample data pointer (header + tick)
+m6_tmp_sample_ptr_hi:   .res 1
+m6_tmp_orn_ptr_lo:      .res 1
+m6_tmp_orn_ptr_hi:      .res 1
+m6_decoded:             .res 3   ; per-channel decoded flag (used in decode loop)
+
 .exportzp note_table_addr_hint := $FF
 .export note_table
 .export volume_table
@@ -1690,3 +3867,91 @@ dec_pat_x2_hi:          .res 1
 .export ch_nn_skip_a
 .export ch_skip_counter_a
 .export ch_end_flag_a
+.export ch_end_flag_b
+.export ch_end_flag_c
+.export ch_skip_counter_b
+.export ch_skip_counter_c
+.export ch_nn_skip_b
+.export ch_nn_skip_c
+.export shadow_ay
+.export pb_position_idx
+.export pb_current_line
+.export pb_tick_in_row
+.export pb_speed
+.export pb_end_of_song
+.export ch_sample_num_a
+.export ch_sample_num_b
+.export ch_sample_num_c
+.export ch_volume_a
+.export ch_volume_b
+.export ch_volume_c
+.export ch_note_a
+.export ch_note_b
+.export ch_note_c
+.export ch_flags_a
+.export ch_flags_b
+.export ch_flags_c
+.export ch_pos_in_sample_a
+.export ch_pos_in_sample_b
+.export ch_pos_in_sample_c
+.export pt3_sample_table_hi
+.export pt3_ornament_table_hi
+.export pt3_base_hi
+.export pt3_position_list_hi
+.export pt3_patterns_ptr_hi
+.export ch_ornament_num_a
+.export ch_pos_in_ornament_a
+.export ch_amp_slide_a
+.export ch_ton_accum_a_lo
+.export ch_ton_accum_a_hi
+.export ch_cur_ton_slide_a_lo
+.export ch_cur_ton_slide_a_hi
+.export ch_amp_slide_b
+.export ch_current_onoff_b
+.export ch_offon_delay_b
+.export ch_onoff_delay_b
+.export ch_current_onoff_c
+.export ch_offon_delay_c
+.export ch_onoff_delay_c
+.export ch_amp_slide_c
+.export ch_ornament_num_b
+.export ch_ornament_num_c
+.export ch_pos_in_ornament_b
+.export ch_pos_in_ornament_c
+.export ch_ton_accum_b_lo
+.export ch_ton_accum_b_hi
+.export ch_ton_accum_c_lo
+.export ch_ton_accum_c_hi
+.export ch_cur_ton_slide_b_lo
+.export ch_cur_ton_slide_b_hi
+.export ch_cur_ton_slide_c_lo
+.export ch_cur_ton_slide_c_hi
+.export ch_env_sliding_a_lo
+.export ch_env_sliding_a_hi
+.export ch_env_sliding_b_lo
+.export ch_env_sliding_b_hi
+.export ch_env_sliding_c_lo
+.export ch_env_sliding_c_hi
+.export ch_noise_sliding_a
+.export ch_noise_sliding_b
+.export ch_noise_sliding_c
+.export pb_noise_period
+.export pb_add_to_noise
+.export pb_sam_noise
+.export pb_sam_env_p
+.export pb_env_period_lo
+.export pb_env_period_hi
+.export pb_env_shape
+.export pb_current_pat_len
+.export pb_cur_env_slide_lo
+.export pb_cur_env_slide_hi
+.export pb_cur_env_delay
+.export pb_env_delay
+.export m6_tmp_tone_lo
+.export m6_tmp_tone_hi
+.export m6_tmp_note
+.export m6_tmp_amp
+.export m6_tmp_sample_ptr_lo
+.export m6_tmp_sample_ptr_hi
+.export m6_tmp_ch_idx
+.export note_table
