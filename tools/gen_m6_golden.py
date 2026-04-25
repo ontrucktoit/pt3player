@@ -13,7 +13,7 @@ Format tests/m6_ref_<fname>.bin:
 """
 
 import sys, struct, os, hashlib
-sys.path.insert(0, '/home/linumax/commodore/jukebox/pt3_python_sim/pt3_python_sim')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pt3_python_sim'))
 
 from pt3_simulator import PT3Module, simulate
 
