@@ -39,7 +39,7 @@ audio. This shapes the architecture in two ways:
 
 The harness reference architecture:
 ```
-  python harness.py test_files/yerzmyey.pt3
+  python harness.py test_files/yerzmyey_fifteen_colours_2014.pt3
     → assembles player.s with ca65 + ld65
     → creates py65 CPU + RAM + memory map
     → loads .prg at $1001, loads PT3 at $4000
@@ -356,15 +356,15 @@ Port `VolTableCreator`. Test identical to M2 but for volume_table[0..255].
 Parse the 0x69-0xC9 header into state (tone_table_idx, speed, num_pos, loop_pos,
 pat_ptr, sample_ptrs, ornament_ptrs, pattern_numbers from position list).
 
-Test: harness loads yerzmyey.pt3 into RAM at $4000, calls player_load_pt3($4000),
-verifies parsed state matches Python `PT3Module(yerzmyey.pt3)`.
+Test: harness loads yerzmyey_fifteen_colours_2014.pt3 into RAM at $4000, calls player_load_pt3($4000),
+verifies parsed state matches Python `PT3Module(yerzmyey_fifteen_colours_2014.pt3)`.
 
 ### M5 — Pattern opcode decoder (single channel, no playback)
 Implement `decode_channel_row` for a single stream — reads bytes from pattern
 stream, decodes into a RowState struct. No state advancement, just "given
 stream ptr, produce next row".
 
-Test: harness calls decode_channel_row repeatedly on ch A of luchibobra.pt3,
+Test: harness calls decode_channel_row repeatedly on ch A of luchibobra_pt3_player_bug_fix_2000.pt3,
 compares each decoded RowState against Python's `decode_next_row()` output.
 
 ### M6 — Simple playback: notes only, no sample, no ornament, no effects
@@ -380,14 +380,14 @@ Add sample pointer resolution, sample tick decoding (4-byte ticks), amplitude
 from sample, tone offset from sample, mixer bits, amp slide accumulator,
 accumulator advance flags.
 
-Test: luchibobra.pt3 — simplest "real" PT3 file in our corpus. After M7,
+Test: luchibobra_pt3_player_bug_fix_2000.pt3 — simplest "real" PT3 file in our corpus. After M7,
 R0-R10 should match Python sim for entire song.
 
 ### M8 — Ornaments
 Add ornament pointer resolution, ornament position tracking, offset application,
 reset rules (note trigger, ornament change without note — design note #9).
 
-Test: luchibobra.pt3 uses ornaments. Full R0-R13 match expected after M8.
+Test: luchibobra_pt3_player_bug_fix_2000.pt3 uses ornaments. Full R0-R13 match expected after M8.
 
 ### M9 — Effects one at a time
 Order (easiest → hardest):
@@ -453,7 +453,7 @@ Separate file: `tests/harness.py`. Main responsibilities:
 **Harness CLI**:
 ```
 python3 tests/harness.py                    # full regression
-python3 tests/harness.py yerzmyey.pt3       # one file
+python3 tests/harness.py yerzmyey_fifteen_colours_2014.pt3       # one file
 python3 tests/harness.py --frames 100 ...   # limit for fast iteration
 python3 tests/harness.py --verbose          # dump all AY writes
 python3 tests/harness.py --diff             # stop at first mismatch, show context

@@ -17,15 +17,21 @@ PLAYER_TICK = PLAYER_BASE + 0x2D
 
 NUM_FRAMES = int(sys.argv[1]) if len(sys.argv) > 1 else 2000
 
-CORPUS = sorted(os.listdir('tests/pt3_corpus'))
+# Corpus = wider regression set: tests/pt3 (M6 core) + tests/pt3_corpus (extras).
+# Approach 2 from the rename PR: duplicates were removed from tests/pt3_corpus,
+# so iterating both directories gives the complete unique 17-file set.
+CORPUS = []
+for d in ['tests/pt3', 'tests/pt3_corpus']:
+    for f in sorted(os.listdir(d)):
+        if f.endswith('.pt3'):
+            CORPUS.append(f'{d}/{f}')
 results = []
 
 print(f"Testing {len(CORPUS)} files for {NUM_FRAMES} frames each...")
 print()
 
-for fname in CORPUS:
-    if not fname.endswith('.pt3'): continue
-    path = f'tests/pt3_corpus/{fname}'
+for path in CORPUS:
+    fname = os.path.basename(path)
     
     # Generate Python golden ref
     try:

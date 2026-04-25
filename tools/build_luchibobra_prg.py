@@ -12,7 +12,7 @@ Output: build/luchibobra_play.prg
 import os, sys
 
 BUILD = 'build'
-PT3 = 'tests/pt3/luchibobra.pt3'
+PT3 = 'tests/pt3/luchibobra_pt3_player_bug_fix_2000.pt3'
 
 def main():
     startup = open(f'{BUILD}/luchibobra_startup.bin','rb').read()

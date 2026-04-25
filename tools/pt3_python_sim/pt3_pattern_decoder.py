@@ -29,7 +29,7 @@ This file is released under MIT as part of the project at
 https://github.com/ontrucktoit/pt3player. See LICENSE at the repo root
 and docs/THIRD_PARTY_NOTICES.md for full attribution.
 
-Mechanics of PT3 pattern playback (verified against luchibobra.pt3 + yerzmyey.pt3):
+Mechanics of PT3 pattern playback (verified against luchibobra_pt3_player_bug_fix_2000.pt3 + yerzmyey_fifteen_colours_2014.pt3):
 
   Each pattern has 3 channels (A, B, C). Each channel is an independent byte
   stream of opcodes and parameters. The three channels play IN PARALLEL at
@@ -275,7 +275,7 @@ def decode_next_row(data: bytes, state: ChannelStreamState) -> Optional[RowState
             # BUT AY_emul and the French Touch player's PTDECOD both use only 3 bytes:
             #     env_period_hi, env_period_lo, sample     (no env_delay!)
             # 
-            # Testing against Vortex Tracker II TXT export of yerzmyey.pt3 (PT3.7):
+            # Testing against Vortex Tracker II TXT export of yerzmyey_fifteen_colours_2014.pt3 (PT3.7):
             #   * 3-byte interpretation = 100% match (1408/1408 rows)
             #   * 4-byte interpretation = breaks (samples decode as garbage)
             # 

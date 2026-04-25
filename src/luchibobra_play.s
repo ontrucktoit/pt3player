@@ -1,12 +1,12 @@
 ; =============================================================================
-; luchibobra_play.s — standalone Plus/4 .prg that plays luchibobra.pt3
+; luchibobra_play.s — standalone Plus/4 .prg that plays luchibobra_pt3_player_bug_fix_2000.pt3
 ;                     bit-exact via M6 player engine + TED Timer 1 IRQ
 ; =============================================================================
 ; Layout:
 ;   $1001-$100C   BASIC stub "10 SYS 4109"
 ;   $100D-$10FF   Startup code + IRQ handler (~256 bytes max)
 ;   $3000-$4FFF   player.bin (M6 jump table + engine + BSS + tables)
-;   $8000-$88BB   luchibobra.pt3 (2236 bytes, embedded via .incbin)
+;   $8000-$88BB   luchibobra_pt3_player_bug_fix_2000.pt3 (2236 bytes, embedded via .incbin)
 ;
 ; Runtime:
 ;   1. Silence TED sound ($FF11/$FF12).

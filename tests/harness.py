@@ -262,9 +262,9 @@ PLAYER_LOAD_PT3 = PLAYER_BASE + 0x03
 # Expected values extracted from Python PT3Module for each test file.
 # (version_char, features_level, tone_table, delay, num_pos, loop_pos, pat_ptr)
 M4_EXPECTED = {
-    "yerzmyey.pt3":   (0x37, 2, 1, 5, 28, 0, 0x00E6),
-    "luchibobra.pt3": (0x35, 0, 2, 4, 9,  0, 0x00D3),
-    "blobbzgame.pt3": (0x72, 1, 2, 3, 8,  2, 0x00D2),
+    "yerzmyey_fifteen_colours_2014.pt3":   (0x37, 2, 1, 5, 28, 0, 0x00E6),
+    "luchibobra_pt3_player_bug_fix_2000.pt3": (0x35, 0, 2, 4, 9,  0, 0x00D3),
+    "v0yager_blobbzgame.pt3": (0x72, 1, 2, 3, 8,  2, 0x00D2),
 }
 
 
@@ -397,7 +397,7 @@ def test_m5a():
     files_fail = 0
     BASE = 0x8000
 
-    for fname in ['luchibobra.pt3', 'blobbzgame.pt3', 'yerzmyey.pt3']:
+    for fname in ['luchibobra_pt3_player_bug_fix_2000.pt3', 'v0yager_blobbzgame.pt3', 'yerzmyey_fifteen_colours_2014.pt3']:
         ref_path = TESTS_DIR / f"m5a_ref_{fname.replace('.pt3','')}.bin"
         ref_data = ref_path.read_bytes()
         assert ref_data[:4] == b'M5A\x01', f"Bad magic in {ref_path}"
@@ -529,7 +529,7 @@ def test_m5b():
     files_fail = 0
     BASE = 0x8000
 
-    for fname in ['luchibobra.pt3', 'blobbzgame.pt3', 'yerzmyey.pt3']:
+    for fname in ['luchibobra_pt3_player_bug_fix_2000.pt3', 'v0yager_blobbzgame.pt3', 'yerzmyey_fifteen_colours_2014.pt3']:
         ref_path = TESTS_DIR / f"m5b_ref_{fname.replace('.pt3','')}.bin"
         ref_data = ref_path.read_bytes()
         assert ref_data[:4] == b'M5B\x01', f"Bad magic in {ref_path}"
@@ -644,7 +644,7 @@ def test_m6(max_frames=2000):
     files_pass = 0
     files_fail = 0
 
-    for fname in ['luchibobra.pt3', 'blobbzgame.pt3', 'yerzmyey.pt3', 'pator_cat.pt3', 'mmcm_xiaomi.pt3', 'leebee_farm.pt3', 'freesky.pt3']:
+    for fname in ['luchibobra_pt3_player_bug_fix_2000.pt3', 'v0yager_blobbzgame.pt3', 'yerzmyey_fifteen_colours_2014.pt3', 'pator_cat.pt3', 'mmcm_xiaomi.pt3', 'leebee_farm.pt3', 'kuvo_free_sky.pt3']:
         ref_path = TESTS_DIR / f"m6_ref_{fname.replace('.pt3','')}.bin"
         ref = ref_path.read_bytes()
         assert ref[:4] == b'M6\x00\x01', f"bad magic in {ref_path}"
