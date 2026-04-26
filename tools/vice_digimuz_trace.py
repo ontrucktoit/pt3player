@@ -12,7 +12,7 @@ Output: build/vice_trace.log with format:
 """
 import socket, subprocess, time, os, sys, select
 
-PRG = sys.argv[1] if len(sys.argv) > 1 else 'build/luchibobra_play.prg'
+PRG = sys.argv[1] if len(sys.argv) > 1 else 'build/play_template.prg'
 DURATION_SEC = int(sys.argv[2]) if len(sys.argv) > 2 else 4
 MON_PORT = 6510
 

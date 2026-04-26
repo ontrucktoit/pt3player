@@ -17,7 +17,7 @@ def build(pt3_path, out_name=None):
     if out_name is None:
         out_name = os.path.splitext(os.path.basename(pt3_path))[0] + '_play.prg'
 
-    startup = open(f'{BUILD}/luchibobra_startup.bin','rb').read()
+    startup = open(f'{BUILD}/play_template_startup.bin','rb').read()
     player  = open(f'{BUILD}/player.bin','rb').read()
     pt3     = open(pt3_path, 'rb').read()
 
