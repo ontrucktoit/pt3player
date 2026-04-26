@@ -23,9 +23,9 @@ The fastest way to hear it:
    LOAD"PT3PLAYER",8,1
    ```
 3. Drop into the machine monitor (`SYS 1024` for TEDMON, or hit the monitor key
-   on real hardware) and load any PT3 file at `$6000`:
+   on real hardware) and load any PT3 file at `$4000`:
    ```
-   L "TUNE.PT3" 08 6000
+   L "TUNE.PT3" 08 4000
    ```
 4. Jump to the player:
    ```
@@ -54,7 +54,7 @@ seven test tunes — load and `RUN` directly, no monitor needed.
 
 ## Embedding the player in your own program
 
-The library is a single binary (`build/player.bin`, 8 KB at `$3000-$4FFF`)
+The library is a single binary (`build/player.bin`, 5.2 KB at `$1100-$2565`)
 plus a header file (`src/pt3_player.inc`). Three public entry points are all
 you need:
 
@@ -65,8 +65,8 @@ start:
         sei
         sta     RAM_ENABLE          ; $FF3F: ROM off so PT3 is visible at high RAM
         jsr     PLAYER_INIT         ; one-time init
-        lda     #>$6000             ; A = hi byte of PT3 base address
-        ldx     #<$6000             ; X = lo byte
+        lda     #>$4000             ; A = hi byte of PT3 base address
+        ldx     #<$4000             ; X = lo byte
         jsr     PLAYER_INIT_SONG    ; load PT3 file, init song state
         ; ... install Timer 1 IRQ handler that JSRs PLAYER_TICK each frame ...
         cli
@@ -89,8 +89,9 @@ startup, ~250 bytes of bootstrap code.
 ```
 $0000-$00FF   Zero page (player uses $D8-$E8, the 17 B "OS-safe" area)
 $1001-$10FF   BASIC stub + startup code (host program)
-$3000-$47FF   PT3 player library (engine + tables + BSS)
-$6000-$7FFF   PT3 song data (default; configurable in pt3player.s)
+$1100-$2565   PT3 player library (engine + RODATA, ~5.2 KB)
+$2566-$28D1   Player BSS (allocated at runtime)
+$4000-$7FFF   PT3 song data (default; configurable in pt3player.s)
 $8000-$BFFF   Free RAM (with ROM disabled at startup)
 $FD21-$FD23   DigiMuz AY-3-8910 register interface
 ```
@@ -99,15 +100,15 @@ $FD21-$FD23   DigiMuz AY-3-8910 register interface
 
 ## Public API
 
-The player exposes a 16-entry jump table at `$3000`. For most users, only the
+The player exposes a 16-entry jump table at `$1100`. For most users, only the
 first three matter (init, load song, tick). The rest are exposed for testing
 and advanced uses.
 
 | Address | Symbol               | Description                                                |
 |---------|----------------------|------------------------------------------------------------|
-| `$3000` | `PLAYER_INIT`        | One-time init: zero state, build note/volume tables        |
-| `$302A` | `PLAYER_INIT_SONG`   | Load PT3 file. In: `A`=hi, `X`=lo of file address          |
-| `$302D` | `PLAYER_TICK`        | Advance by one frame. Call once per 50 Hz IRQ              |
+| `$1100` | `PLAYER_INIT`        | One-time init: zero state, build note/volume tables        |
+| `$112A` | `PLAYER_INIT_SONG`   | Load PT3 file. In: `A`=hi, `X`=lo of file address          |
+| `$112D` | `PLAYER_TICK`        | Advance by one frame. Call once per 50 Hz IRQ              |
 
 The remaining entries (`PLAYER_BUILD_NOTE_TABLE`, `PLAYER_DECODE_ROW`, etc.)
 are documented in `src/pt3_player.inc` and used primarily by the regression
@@ -166,7 +167,8 @@ python3 tools/build_play_prg.py path/to/your.pt3
   decoder state. Implementation matches Bulba's `PTDECOD` reference exactly.
 - **Pre-computed pattern lengths** — patterns can have variable lengths
   (PT3.7 spec). We compute them all once at song load time so per-tick work
-  fits inside the 35795-cycle 50 Hz IRQ budget on Plus/4 NTSC.
+  fits inside the 35795-cycle 50 Hz IRQ budget on Plus/4 NTSC. The whole
+  engine compiles to \$1100-\$2565 (~5.2 KB) plus ~876 B of BSS.
 
 For deeper rationale, see [`docs/REFERENCES.md`](docs/REFERENCES.md) and
 the heavily commented `src/player.s` (135 KB of source, half of which is

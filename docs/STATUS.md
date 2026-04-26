@@ -24,7 +24,7 @@ real measurements and any design adjustments.
 | M4  | PT3 Header Parser             | DONE   | 3/3    |    1181 B  |  +219 | ad5ccbafec9b0fd7a1e0a9e2db2f7675       |
 | M5a | Pattern Opcode Decoder (1 ch) | DONE   | 3/3    |    1850 B  |  +669 | aabe39775c81802fd04e3e191d021e2a       |
 | M5b | Skip + Multi-channel Driver   | DONE   | 3/3    |    2281 B  |  +431 | ab8aaba089bd69c94763139b75627dce       |
-| M6  | Full playback (notes+samples+ornaments+all effects) | DONE | 7/7    | engine \$3000-\$47D2 (~6 KB) | +large | dac3c056f6773678743e3c2b12dc9bf2       |
+| M6  | Full playback (notes+samples+ornaments+all effects) | DONE | 7/7    | engine \$1100-\$2565 (~5.2 KB) | +large | (relocated to \$1100 post-PR #7) |
 
 NOTE: Original plan had M7 (samples), M8 (ornaments), M9 (effects a-f), M10 (edge cases), M11 (regression) as separate milestones. M6 absorbed all of them — bit-exact playback of the full 7-file corpus implies that samples, ornaments, and effects all work correctly.
 
@@ -47,9 +47,22 @@ Total regression status: **all six core milestones PASS**.
 
 ---
 
-## Memory map (current, after M5b)
+## Memory map
 
-Player is a co-resident library at `$3000-$3FFF` (4 KB budget).
+Current layout (post PR #7 — relocated to $1100):
+
+```
+$1100 .. $1130   Jump table             ~48 B    (16 entries × 3 bytes; final M6 set)
+$1131 .. $2565   Code + RODATA + tables ~5.0 KB  (full M1-M6 engine, no padding)
+$2566 .. $28D1   BSS                    876 B    (per-channel state, scratch, etc.)
+```
+
+The historical breakdown below is preserved as-is from the M5b era, when the
+player was still at $3000. Offsets and sizes are out of date but the
+structure (jump table → code → RODATA → BSS) and the per-section labels
+(M2 note_table, M3 volume_table, M4 pt3_* state, etc.) are unchanged.
+
+Historical layout (post-M5b, before M6 + relocation):
 
 ```
 $3000 .. $3020   Jump table             33 B     (11 entries × 3 bytes; M5a added one)
@@ -193,7 +206,7 @@ back cleanly; the merge commit preserves full branch history in the graph.
 - Deterministic build confirmed across both versions and both machines — same
   source produces byte-identical `player.bin`. This has been our main integration
   sanity check on every milestone since M1.
-- Build config: `src/player.cfg` puts CODE at `$3000`, with hard 4 KB ceiling
+- Build config: `src/player.cfg` puts CODE at `$1100`, no padding (size in cfg is just headroom)
 
 ### Simulation
 - **py65 1.2.0** (Python 6502 emulator) for CPU-level validation

@@ -23,7 +23,7 @@ TESTS_DIR = PROJECT_ROOT / "tests"
 DIGIMUZ_DATA_W = 0xFD22
 DIGIMUZ_REG_SEL = 0xFD23
 
-PLAYER_BASE = 0x3000
+PLAYER_BASE = 0x1100
 PLAYER_INIT = PLAYER_BASE + 0x00
 PLAYER_PLAY = PLAYER_BASE + 0x06
 PLAYER_BUILD_NOTE_TABLE = PLAYER_BASE + 0x18
@@ -115,7 +115,7 @@ def test_m1():
     print("=" * 70)
     assemble_player()
     mpu, obs = build_sim()
-    load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
+    load_bin(mpu, BUILD_DIR / "player.bin", PLAYER_BASE)
     c = call_sub(mpu, PLAYER_INIT)
     print(f"  player_init: {c} steps")
     obs.snapshot()
@@ -152,7 +152,7 @@ def test_m2():
     for table_idx in range(4):
         for version in range(2):
             mpu, obs = build_sim()
-            load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
+            load_bin(mpu, BUILD_DIR / "player.bin", PLAYER_BASE)
 
             # Call player_init to zero BSS
             call_sub(mpu, PLAYER_INIT)
@@ -218,7 +218,7 @@ def test_m3():
 
     for pt_version, variant in cases:
         mpu, obs = build_sim()
-        load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
+        load_bin(mpu, BUILD_DIR / "player.bin", PLAYER_BASE)
 
         call_sub(mpu, PLAYER_INIT)
 
@@ -291,7 +291,7 @@ def test_m4():
         (ev_char, ev_fl, ev_tt, ev_del, ev_npos, ev_lpos, ev_pptr) = exp
 
         mpu, obs = build_sim()
-        load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
+        load_bin(mpu, BUILD_DIR / "player.bin", PLAYER_BASE)
 
         # Load PT3 file at $8000
         pt3_data = (TESTS_DIR / "pt3" / fname).read_bytes()
@@ -405,7 +405,7 @@ def test_m5a():
 
         # Load PT3 into py65 memory (shared across all sequences in this file)
         mpu, obs = build_sim()
-        load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
+        load_bin(mpu, BUILD_DIR / "player.bin", PLAYER_BASE)
         pt3 = (TESTS_DIR / "pt3" / fname).read_bytes()
         for i, b in enumerate(pt3):
             mpu.memory[BASE + i] = b
@@ -536,7 +536,7 @@ def test_m5b():
         num_patterns = ref_data[4] | (ref_data[5] << 8)
 
         mpu, obs = build_sim()
-        load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
+        load_bin(mpu, BUILD_DIR / "player.bin", PLAYER_BASE)
         pt3 = (TESTS_DIR / "pt3" / fname).read_bytes()
         for i, b in enumerate(pt3):
             mpu.memory[BASE + i] = b
@@ -655,7 +655,7 @@ def test_m6(max_frames=2000):
             return ref[base_off:base_off+14]
 
         mpu, obs = build_sim()
-        load_bin(mpu, BUILD_DIR / "player.bin", 0x3000)
+        load_bin(mpu, BUILD_DIR / "player.bin", PLAYER_BASE)
         pt3 = (TESTS_DIR / "pt3" / fname).read_bytes()
         for i, b in enumerate(pt3):
             mpu.memory[BASE + i] = b

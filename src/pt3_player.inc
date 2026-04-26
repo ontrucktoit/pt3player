@@ -13,11 +13,11 @@
 ; MINIMAL EXAMPLE — embed this into your own program
 ; -----------------------------------------------------------------------------
 ; The 3 public entry points you need:
-;   PLAYER_INIT      ($3000) - One-time init: zero state, build note/vol tables.
-;   PLAYER_INIT_SONG ($302A) - Load a PT3 file. In: A=hi, X=lo of file address.
-;   PLAYER_TICK      ($302D) - Advance by one frame. Call once per 50 Hz IRQ.
+;   PLAYER_INIT      ($1100) - One-time init: zero state, build note/vol tables.
+;   PLAYER_INIT_SONG ($112A) - Load a PT3 file. In: A=hi, X=lo of file address.
+;   PLAYER_TICK      ($112D) - Advance by one frame. Call once per 50 Hz IRQ.
 ;
-; A complete embed looks like this (assumes player.bin loaded at $3000,
+; A complete embed looks like this (assumes player.bin loaded at $1100,
 ; PT3 file loaded at $6000):
 ;
 ;     .include "pt3_player.inc"
@@ -66,7 +66,7 @@ AY_R13_ENV_SHAPE    = 13            ; Envelope shape (writing restarts envelope!
 ; -----------------------------------------------------------------------------
 ; Player library base address and jump table offsets
 ; -----------------------------------------------------------------------------
-PLAYER_BASE         = $3000
+PLAYER_BASE         = $1100
 
 ; Public entry points (jump table — 3 bytes each, JMP absolute):
 PLAYER_INIT         = PLAYER_BASE + $00   ; One-time init (build tables, zero state)
