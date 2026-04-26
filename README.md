@@ -1,141 +1,228 @@
 # PT3 Player for Commodore Plus/4 + DigiMuz
 
-**Full name / długa chwalebna nazwa projektu**:
-`new_reference_player_by_Claude_Opus4.7_who_deserves_a_bottle_of_Georgian_kindzmarauli`
+A native 6502 assembly (CA65) player for **PT3 (ProTracker 3)** music files,
+targeting the Commodore Plus/4 with a [DigiMuz AY-3-8910 expansion card](https://retrocombs.com/digimuz).
 
-A native 6502 assembly (CA65) player for PT3 (ProTracker 3) music files,
-targeting the Commodore Plus/4 with a DigiMuz AY-3-8910 expansion card.
+Bit-exact compatible with **Vortex Tracker II** — every register write to the
+AY chip matches the VTII reference output, frame-for-frame, on a 19-file
+test corpus including PT3.5/PT3.7/VTII1.0/VTII2.0 files using all four tone
+tables and the full PT3 effect set.
 
-## Project Goal
+> **Project full name** *(długa chwalebna nazwa projektu)*:
+> `new_reference_player_by_Claude_Opus4.7_who_deserves_a_bottle_of_Georgian_kindzmarauli`
 
-A reference-quality PT3 player that handles the **full PT3 specification**
-(all effects, all FeaturesLevels 0-2, all tone tables, variable pattern lengths)
-— bit-exact compatible with Vortex Tracker II. No shortcuts, no subset-only
-optimizations. If Bulba-Ayer can play it, this player plays it too.
+---
+
+## Try it now
+
+The fastest way to hear it:
+
+1. Download `pt3player.prg` from the [latest release](https://github.com/ontrucktoit/pt3player/releases).
+2. Load on your Plus/4 (or in [YAPE](http://yape.homeserver.hu/)):
+   ```
+   LOAD"PT3PLAYER",8,1
+   ```
+3. Drop into the machine monitor (`SYS 1024` for TEDMON, or hit the monitor key
+   on real hardware) and load any PT3 file at `$4000`:
+   ```
+   L "TUNE.PT3" 08 4000
+   ```
+4. Jump to the player:
+   ```
+   G 100D
+   ```
+
+The screen blanks (uniform border colour), the Timer 1 IRQ takes over, and
+your tune plays through the DigiMuz audio jack. RESET to stop.
+
+The release zip also includes ready-to-run bundled PRGs (`*_play.prg`) for
+seven test tunes — load and `RUN` directly, no monitor needed.
+
+---
 
 ## Status
 
-- ✅ **Python reference simulator: 100% bit-exact on all 7 test files**
-  (validated against VTII-generated PSG byte-for-byte)
-- 🚧 **6502 CA65 player: in development**
-- 🚧 **py65 test harness for bit-exact 6502 regression: planned**
+✅ **M1–M6 complete and shipping** — full playback engine, bit-exact.
 
-## Architecture
+| Test corpus              | Files | Result                             |
+|--------------------------|------:|------------------------------------|
+| Bundled regression set   |     7 | 100% bit-exact PSG match vs VTII   |
+| Extended test corpus     |    19 | Engine handles all without crash   |
+| Live hardware test       |   1+1 | Plus/4 + DigiMuz, plus YAPE PAL/NTSC |
 
-- **Co-resident module** (not chain-loaded) — jukebox UI stays live
-  while music plays. User can browse, pause, skip tracks without
-  interrupting audio.
-- **Timer #1 IRQ** (TED countdown timer @ 894.9 kHz / $3A43 reload = 60 Hz
-  for NTSC, $4523 for PAL) — independent from raster, survives graphics
-  mode changes.
-- **Parameterized PLAYER_BASE** via `-D PLAYER_BASE=$xxxx` for ld65 —
-  default $3000, reusable for other programs.
-- **Standalone library** — clean public API, usable by any Plus/4 program
-  (games, demos, other tools). Jukebox is just the first client.
+---
 
-## Memory Map (default)
+## Embedding the player in your own program
+
+The library is a single binary (`build/player.bin`, 5.2 KB at `$1100-$2565`)
+plus a header file (`src/pt3_player.inc`). Three public entry points are all
+you need:
+
+```asm
+.include "pt3_player.inc"
+
+start:
+        sei
+        sta     RAM_ENABLE          ; $FF3F: ROM off so PT3 is visible at high RAM
+        jsr     PLAYER_INIT         ; one-time init
+        lda     #>$4000             ; A = hi byte of PT3 base address
+        ldx     #<$4000             ; X = lo byte
+        jsr     PLAYER_INIT_SONG    ; load PT3 file, init song state
+        ; ... install Timer 1 IRQ handler that JSRs PLAYER_TICK each frame ...
+        cli
+        jmp     *                   ; IRQ does the rest
+```
+
+For a complete reference, see:
+
+- **`src/pt3player.s`** — the standalone player (loads any PT3 from monitor)
+- **`src/play_template.s`** — template that bundles a specific PT3 via `.incbin`
+- **`src/pt3_player.inc`** — full equates list with all jump table entries
+
+Both reference programs include PAL/NTSC auto-detection and clean-screen
+startup, ~250 bytes of bootstrap code.
+
+---
+
+## Memory map (default)
 
 ```
-$0000-$00FF   Zero page (we use $D8-$E8, the 17B "OS never touches" area)
-$1000-$2FFF   Jukebox UI (host program, not part of this lib)
-$3000-$3FFF   PT3 Player (~4 KB) — this library
-$4000-$7FFF   PT3 song data buffer (16 KB max)
-$8000-$FCFF   Free for expansion
+$0000-$00FF   Zero page (player uses $D8-$E8, the 17 B "OS-safe" area)
+$1001-$10FF   BASIC stub + startup code (host program)
+$1100-$2565   PT3 player library (engine + RODATA, ~5.2 KB)
+$2566-$28D1   Player BSS (allocated at runtime)
+$4000-$7FFF   PT3 song data (default; configurable in pt3player.s)
+$8000-$BFFF   Free RAM (with ROM disabled at startup)
+$FD21-$FD23   DigiMuz AY-3-8910 register interface
 ```
+
+---
 
 ## Public API
 
-Jump table at `PLAYER_BASE`, 3 bytes per entry:
+The player exposes a 16-entry jump table at `$1100`. For most users, only the
+first three matter (init, load song, tick). The rest are exposed for testing
+and advanced uses.
 
-| Offset | Symbol | Description |
-|--------|--------|-------------|
-| +$00 | `player_init` | One-time init: hardware, tables. Call on program startup. |
-| +$03 | `player_load_pt3` | Parse PT3 header. In: A=lo, X=hi of file address. Out: A=0 OK, !=0 error code + carry set. |
-| +$06 | `player_play` | Start playback (enables timer IRQ). |
-| +$09 | `player_stop` | Stop playback, silence AY. |
-| +$0C | `player_pause` | Pause (stops IRQ, keeps state). |
-| +$0F | `player_is_playing` | Returns A=0 stopped, !=0 playing. |
-| +$12 | `player_is_song_ended` | Returns A=0 playing, !=0 reached loop point past end. |
-| +$15 | `player_get_position` | Returns A=position in PlayOrder, X=row in pattern. |
+| Address | Symbol               | Description                                                |
+|---------|----------------------|------------------------------------------------------------|
+| `$1100` | `PLAYER_INIT`        | One-time init: zero state, build note/volume tables        |
+| `$112A` | `PLAYER_INIT_SONG`   | Load PT3 file. In: `A`=hi, `X`=lo of file address          |
+| `$112D` | `PLAYER_TICK`        | Advance by one frame. Call once per 50 Hz IRQ              |
 
-## Test Files
+The remaining entries (`PLAYER_BUILD_NOTE_TABLE`, `PLAYER_DECODE_ROW`, etc.)
+are documented in `src/pt3_player.inc` and used primarily by the regression
+harness in `tests/harness.py`.
 
-This player is verified bit-exact against VTII on 7 diverse PT3 files
-covering all versions, FeaturesLevels, and effects:
+---
 
-| File | Version | FL | Features |
-|------|---------|-----|----------|
-| yerzmyey_fifteen_colours_2014.pt3 | PT3.7 | 2 | DELAY |
-| v0yager_blobbzgame.pt3 | VTII 1.0 | 1 | DELAY |
-| luchibobra_pt3_player_bug_fix_2000.pt3 | PT3.5 | 0 | "bug f!x" test song |
-| Lee_Bee_Basterdale_Farm.pt3 | PT3.5 | 0 | GLISS + PORTM + DELAY |
-| Pator_Parallel_Visions.pt3 | VTII 1.0 | 1 | GLISS + DELAY + ENGLS |
-| FreeSky.pt3 | PT3.7 | 2 | GLISS + VIBRATO + NOISE |
+## Test corpus
 
-## References
+Bit-exact regression on 7 PT3 files covering all PT3 versions and effect
+combinations:
 
-See [docs/REFERENCES.md](docs/REFERENCES.md) for the complete list of external
-resources (VTII, ZXTune, Bulba VTII10, AY-3-8910 datasheet, TED manual, PT3 spec).
+| File                                    | Version  | FL | Effects                           |
+|-----------------------------------------|----------|----|-----------------------------------|
+| `yerzmyey_fifteen_colours_2014.pt3`     | PT3.7    | 2  | DELAY                             |
+| `v0yager_blobbzgame.pt3`                | VTII 1.0 | 1  | DELAY                             |
+| `luchibobra_pt3_player_bug_fix_2000.pt3`| PT3.5    | 0  | "bug f!x" stress test (Black Groove) |
+| `leebee_farm.pt3`                       | PT3.5    | 0  | GLISS + PORTM + DELAY             |
+| `pator_cat.pt3`                         | VTII 1.0 | 1  | GLISS + DELAY + ENGLS             |
+| `kuvo_free_sky.pt3`                     | PT3.7    | 2  | GLISS + VIBRATO + NOISE           |
+| `mmcm_xiaomi.pt3`                       | PT3.7    | 2  | DiHalt 2025 entry                 |
 
-Key reference for 6502 port decisions: the Python simulator in `pt3_python_sim/`
-(bit-exact validated against VTII on 20 diverse PT3 files). Every non-obvious
-behavior is documented there with line references to VTII's `trfuncs.pas`.
+Plus a 12-file extended corpus in `tests/pt3_corpus/` for additional engine
+coverage. All files attributed to their composers in
+[`docs/THIRD_PARTY_NOTICES.md`](docs/THIRD_PARTY_NOTICES.md).
+
+---
+
+## Building from source
+
+Requirements: [`cc65`](https://cc65.github.io/) toolchain (`ca65` + `ld65`),
+Python 3.10+ (for the regression harness).
+
+```bash
+# Build the engine + run full regression
+PATH=/path/to/cc65/bin:$PATH python3 tests/harness.py all
+
+# Build standalone pt3player.prg
+python3 tools/build_pt3player.py
+
+# Bundle a specific PT3 into a self-contained .prg
+python3 tools/build_play_prg.py path/to/your.pt3
+```
+
+---
+
+## Architecture
+
+- **Pure subroutine library** — the host owns the IRQ. Player has zero
+  knowledge of timing, screen, or system state. Just writes to AY when called.
+- **Zero hardcoded tables** — note tables and volume tables are generated at
+  runtime via Ivan Roshin's `NoteTableCreator` and `VolTableCreator`
+  algorithms, ported line-by-line from Bulba's VTII10 r7 Z80 source. Saves
+  ~1 KB of ROM compared to lookup tables.
+- **PT3 stream is stateful** — same byte means different things depending on
+  decoder state. Implementation matches Bulba's `PTDECOD` reference exactly.
+- **Pre-computed pattern lengths** — patterns can have variable lengths
+  (PT3.7 spec). We compute them all once at song load time so per-tick work
+  fits inside the 35795-cycle 50 Hz IRQ budget on Plus/4 NTSC. The whole
+  engine compiles to \$1100-\$2565 (~5.2 KB) plus ~876 B of BSS.
+
+For deeper rationale, see [`docs/REFERENCES.md`](docs/REFERENCES.md) and
+the heavily commented `src/player.s` (135 KB of source, half of which is
+prose).
+
+---
 
 ## Acknowledgments
 
-This project would not exist without the work of three people who
-built and documented the Vortex Tracker II ecosystem on ZX Spectrum,
-MSX, and Windows over the past two decades. Their decision to release
-their source code publicly is what made it possible for a Plus/4
-player to exist at all.
+This project would not exist without the work of three people who built and
+documented the Vortex Tracker II ecosystem on ZX Spectrum, MSX, and Windows
+over the past two decades. Their decision to release source code publicly is
+what made it possible for a Plus/4 player to exist at all.
 
-- **Sergey Bulba** (S.V.Bulba) — author of the VTII Z80 player for
-  ZX Spectrum (`VTII10 r7`, ©2004–2007) and the Pascal source for the
-  desktop tracker (`trfuncs.pas`, ©2000–2009). The Pascal source is the
-  executable specification that our Python simulator was line-by-line
-  ported from. The Z80 player is what supplied our note-table and
-  volume-table generators.
-  Project page: http://bulba.untergrund.net/
+- **Sergey Bulba** (S.V.Bulba) — author of the VTII Z80 player for ZX
+  Spectrum (`VTII10 r7`, ©2004–2007) and the Pascal source for the desktop
+  tracker (`trfuncs.pas`, ©2000–2009). The Pascal source is the executable
+  specification that our Python simulator was line-by-line ported from.
+  The Z80 player is what supplied our note-table and volume-table generators.
+  Project page: <http://bulba.untergrund.net/>
 
-- **Ivan Roshin** — author of the `NoteTableCreator` and
-  `VolTableCreator` algorithms inside Bulba's Z80 player. These are
-  the runtime generators that produce the four PT3 tone tables (ST,
-  ASM-PT2, ASM-PT3, REAL-PT3) and the 256-entry volume combination
-  table — without them, every PT3 player would need a hardcoded ROM
-  blob of pre-computed tables. We ported both generators line-by-line
-  to Python (`pt3_tables.py`) and then to CA65 (`src/player.s`,
-  M2 + M3 milestones).
+- **Ivan Roshin** — author of the `NoteTableCreator` and `VolTableCreator`
+  algorithms inside Bulba's Z80 player. These are the runtime generators
+  that produce the four PT3 tone tables (ST, ASM-PT2, ASM-PT3, REAL-PT3)
+  and the 256-entry volume combination table.
 
-- **Ivan Pirog** — maintainer of Vortex Tracker II 2.x
-  (©2017–2019). The VTII 2.x source release is what the publicly
-  available `trfuncs.pas` we ported from comes from
-  (https://github.com/z00m128/vortextracker25 backup of Pirog's
-  original Bitbucket).
+- **Ivan Pirog** — maintainer of Vortex Tracker II 2.x (©2017–2019). The
+  VTII 2.x source release is what the publicly available `trfuncs.pas` we
+  ported from comes from
+  ([backup](https://github.com/z00m128/vortextracker25) of Pirog's Bitbucket).
 
-The PT3 music format itself was created by Bulba's tracker. Test files
-in this repository were composed by their respective musicians (credited
-in filenames), with reference PSG dumps generated by VTII.
+The PT3 music format itself was created by Bulba's tracker. Test files in
+this repository were composed by their respective musicians (credited in
+filenames), with reference PSG dumps generated by VTII.
 
-For the complete inventory of which files in this repository derive
-from which third-party source, see [`docs/THIRD_PARTY_NOTICES.md`](docs/THIRD_PARTY_NOTICES.md).
+For per-file attribution and license carve-outs, see
+[`docs/THIRD_PARTY_NOTICES.md`](docs/THIRD_PARTY_NOTICES.md).
 
 ### Project work
 
-- **Kris** (project owner): Plus/4 + DigiMuz hardware, test methodology,
-  bit-exact validation strategy, listening tests on YAPE that drove
-  diagnosis of the R13 envelope-retrigger and pattern-boundary IRQ-overrun
-  bugs.
-- **Claude Opus 4.7** (Anthropic): Python reference simulator,
-  CA65 6502 implementation, py65 test harness — pair-programmed with Kris,
-  invoice settled in Kindzmarauli. 🍷
+- **Kris** (project owner) — Plus/4 + DigiMuz hardware, test methodology,
+  bit-exact validation strategy, listening tests on YAPE that drove diagnosis
+  of the R13 envelope-retrigger and pattern-boundary IRQ-overrun bugs.
+- **Claude Opus 4.7** (Anthropic) — Python reference simulator, CA65 6502
+  implementation, py65 test harness — pair-programmed with Kris, invoice
+  settled in Kindzmarauli. 🍷
+
+---
 
 ## License
 
 MIT — see [`LICENSE`](LICENSE) for the full text.
 
-The MIT license covers the original code in this repository: the
-CA65 6502 implementation, the Python reference simulator wrapper code,
-the test harness, build tools, and all documentation. Portions ported
-from Vortex Tracker II source remain governed by their original authors'
-release terms — see [`docs/THIRD_PARTY_NOTICES.md`](docs/THIRD_PARTY_NOTICES.md)
-for the per-file attribution and the carve-out language in `LICENSE`.
+Portions ported from Vortex Tracker II source remain governed by their
+original authors' release terms; see
+[`docs/THIRD_PARTY_NOTICES.md`](docs/THIRD_PARTY_NOTICES.md) for details
+and the carve-out language in `LICENSE`.

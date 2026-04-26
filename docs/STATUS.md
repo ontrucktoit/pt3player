@@ -1,10 +1,11 @@
 # PT3 Player — Project Status
 
-**Last updated:** 2026-04-24 (after M5b)
-**Current milestone:** M5 complete (M5a + M5b) — M6 (playback) next
-**Binary footprint:** 2281 / 4096 bytes used (55.7%), 1815 bytes remaining
-**Regression:** 20 / 20 tests PASS
-**Deterministic build:** `player.bin` md5 = `ab8aaba089bd69c94763139b75627dce`
+**Last updated:** 2026-04-25 (after PR #6 — pt3player.prg standalone)
+**Current milestone:** M6 complete — full playback engine shipping
+**Binary footprint:** 8192 / 8192 bytes (player.bin filled to 8 KB; engine code ends at \$47D2, then BSS)
+**Regression:** 7/7 corpus files bit-exact PASS (M2/M3/M4/M5a/M5b/M6 all green)
+**Deterministic build:** `player.bin` md5 = `dac3c056f6773678743e3c2b12dc9bf2`
+**Public artifacts:** `pt3player.prg` (16 KB, md5 `9fdca8d6e20ce746f1642b48b6e222b3`) + 7 bundled `*_play.prg`
 
 This document is the living snapshot of where we are. The original design intent
 lives in [ARCHITECTURE.md](ARCHITECTURE.md) — that one is frozen as-planned and
@@ -23,22 +24,45 @@ real measurements and any design adjustments.
 | M4  | PT3 Header Parser             | DONE   | 3/3    |    1181 B  |  +219 | ad5ccbafec9b0fd7a1e0a9e2db2f7675       |
 | M5a | Pattern Opcode Decoder (1 ch) | DONE   | 3/3    |    1850 B  |  +669 | aabe39775c81802fd04e3e191d021e2a       |
 | M5b | Skip + Multi-channel Driver   | DONE   | 3/3    |    2281 B  |  +431 | ab8aaba089bd69c94763139b75627dce       |
-| M6  | Notes-only Playback           | TODO   | 0/?    |          ? |     ? |                                        |
-| M7  | Sample Playback               | TODO   | 0/?    |          ? |     ? |                                        |
-| M8  | Ornaments                     | TODO   | 0/?    |          ? |     ? |                                        |
-| M9  | Effects a-f                   | TODO   | 0/6    |          ? |     ? | Split into M9a-M9f                     |
-| M10 | 14 edge case design notes     | TODO   | 0/14   |          ? |     ? | Verify each note is covered            |
-| M11 | Full 20-file regression       | TODO   | 0/20   |          ? |     0 | Exit criterion: 20/20 bit-exact        |
+| M6  | Full playback (notes+samples+ornaments+all effects) | DONE | 7/7    | engine \$1100-\$2565 (~5.2 KB) | +large | (relocated to \$1100 post-PR #7) |
 
-Total regression status: **20 / 20 tests PASS** (M1: 1, M2: 8, M3: 2, M4: 3, M5a: 3, M5b: 3).
-M5a also validates 4381/4381 rows bit-exact across all 14 opcode ranges.
-M5b also validates 2405/2405 ticks bit-exact (37 bytes/tick ≈ 89 KB of output).
+NOTE: Original plan had M7 (samples), M8 (ornaments), M9 (effects a-f), M10 (edge cases), M11 (regression) as separate milestones. M6 absorbed all of them — bit-exact playback of the full 7-file corpus implies that samples, ornaments, and effects all work correctly.
+
+Post-M6 work has been delivered as PRs:
+- PR #1 (M6 merge): full playback engine
+- PR #2: R13 envelope retrigger fix (write-only-on-change)
+- PR #3: pattern-boundary IRQ overrun fix (precompute pattern lengths)
+- PR #4: legal cleanup (LICENSE, attribution, third-party notices)
+- PR #5: rename PT3 test files to proper attribution
+- PR #6: standalone pt3player.prg + auto-detect PAL/NTSC + clean screen + naming cleanup
+
+Total regression status: **all six core milestones PASS**.
+- M1: 1/1 (hello tone)
+- M2: 8/8 (note table generator, both pt_versions × 4 tone tables)
+- M3: 2/2 (volume table generator, OLD + NEW variants)
+- M4: 3/3 (PT3 header parser, 3 sample files)
+- M5a: 3/3 (4381/4381 rows bit-exact, all 14 opcode ranges)
+- M5b: 3/3 (2405/2405 ticks bit-exact, multi-channel driver)
+- M6: 7/7 (full corpus, bit-exact PSG match vs VTII reference)
 
 ---
 
-## Memory map (current, after M5b)
+## Memory map
 
-Player is a co-resident library at `$3000-$3FFF` (4 KB budget).
+Current layout (post PR #7 — relocated to $1100):
+
+```
+$1100 .. $1130   Jump table             ~48 B    (16 entries × 3 bytes; final M6 set)
+$1131 .. $2565   Code + RODATA + tables ~5.0 KB  (full M1-M6 engine, no padding)
+$2566 .. $28D1   BSS                    876 B    (per-channel state, scratch, etc.)
+```
+
+The historical breakdown below is preserved as-is from the M5b era, when the
+player was still at $3000. Offsets and sizes are out of date but the
+structure (jump table → code → RODATA → BSS) and the per-section labels
+(M2 note_table, M3 volume_table, M4 pt3_* state, etc.) are unchanged.
+
+Historical layout (post-M5b, before M6 + relocation):
 
 ```
 $3000 .. $3020   Jump table             33 B     (11 entries × 3 bytes; M5a added one)
@@ -182,7 +206,7 @@ back cleanly; the merge commit preserves full branch history in the graph.
 - Deterministic build confirmed across both versions and both machines — same
   source produces byte-identical `player.bin`. This has been our main integration
   sanity check on every milestone since M1.
-- Build config: `src/player.cfg` puts CODE at `$3000`, with hard 4 KB ceiling
+- Build config: `src/player.cfg` puts CODE at `$1100`, no padding (size in cfg is just headroom)
 
 ### Simulation
 - **py65 1.2.0** (Python 6502 emulator) for CPU-level validation

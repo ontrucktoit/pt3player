@@ -10,22 +10,22 @@
 ; -------------
 ;   1. LOAD"PT3PLAYER",8,1     ← load this player into RAM
 ;   2. (enter machine monitor — TEDMON via SYS 1024 or hardware key)
-;   3. L "TUNE.PT3" 08 6000    ← load any PT3 file at $6000 (default)
+;   3. L "TUNE.PT3" 08 4000    ← load any PT3 file at $4000 (default)
 ;   4. G 100D                  ← jump to player start
-;      → player auto-detects PAL/NTSC, sets up 50 Hz IRQ, plays from $6000.
+;      → player auto-detects PAL/NTSC, sets up 50 Hz IRQ, plays from $4000.
 ;   5. To stop: hit RESET on Plus/4.
 ;
 ; CHANGING THE DEFAULT PT3 LOAD ADDRESS
 ; -------------------------------------
-; By default the player expects PT3 at $6000 (8 KB of free RAM, no ROM
-; conflict). If you want to load PT3 elsewhere, edit PT3_BASE below and
-; rebuild with:
+; By default the player expects PT3 at $4000 (16 KB of free RAM, no ROM
+; conflict, immediately past the player's own memory footprint). If you
+; want to load PT3 elsewhere, edit PT3_BASE below and rebuild with:
 ;     python3 tools/build_pt3player.py
 ;
 ; AVOID these areas:
 ;   $0000-$0FFF   zero page + stack + system vectors
 ;   $1001-$10FF   our BASIC stub + startup code
-;   $3000-$47FF   player engine code + BSS
+;   $1100-$28D1   player engine code + RODATA + BSS
 ;   $C000-$FCFF   KERNAL ROM (read-only after RESET; ROM gets disabled at
 ;                 startup but the user may have already loaded into RAM here
 ;                 expecting ROM to shadow it — confusing, avoid)
@@ -33,16 +33,16 @@
 ;   $FF00-$FFFF   TED registers
 ;
 ; Recommended PT3 load addresses (pick one and stay consistent):
-;   $5000-$5FFF   4 KB  (small files only)
-;   $6000-$7FFF   8 KB  (DEFAULT — most PT3 files fit here)
-;   $4800-$BFFF   ~30 KB  (large files; works because we disable ROM at startup)
+;   $4000-$7FFF   16 KB (DEFAULT — comfortable for any PT3 file)
+;   $8000-$BFFF   16 KB (works because we disable ROM at startup)
 ;
 ; MEMORY MAP
 ; ----------
 ;   $1001-$100C   BASIC stub "10 SYS 4109"
 ;   $100D-$10FF   Startup code + IRQ handler (~250 bytes)
-;   $3000-$47FF   player.bin (engine + BSS)
-;   $4800-$5FFF   FREE
+;   $1100-$2565   player.bin (engine + RODATA, ~5.2 KB)
+;   $2566-$28D1   player BSS (~876 bytes, allocated at load time)
+;   $28D2-$3FFF   FREE
 ;   $PT3_BASE...  PT3 file (loaded by user via monitor)
 ;
 ; PAL/NTSC AUTO-DETECT
@@ -69,14 +69,14 @@
 ; =============================================================================
 ; CONFIG — edit and rebuild to change PT3 load address
 ; =============================================================================
-PT3_BASE         = $6000
+PT3_BASE         = $4000
 
 ; -----------------------------------------------------------------------------
-; Public player API entry points
+; Public player API entry points (PLAYER_BASE is now $1100)
 ; -----------------------------------------------------------------------------
-PLAYER_INIT      = $3000
-PLAYER_INIT_SONG = $302A
-PLAYER_TICK      = $302D
+PLAYER_INIT      = $1100
+PLAYER_INIT_SONG = $112A
+PLAYER_TICK      = $112D
 
 ; -----------------------------------------------------------------------------
 ; TED registers (Plus/4 video/sound/timer chip)
@@ -152,12 +152,9 @@ start:
 
         ; ---------------------------------------------------------------------
         ; Switch all ROMs off (full RAM mode).
-        ; This is REQUIRED for two reasons:
-        ; (1) Many valid PT3_BASE addresses are in the ROM-shadowed region
-        ;     ($8000-$FCFF). With ROM on, reads return ROM, parse fails.
-        ; (2) Even when PT3_BASE is at $6000 (which is always RAM), we want
-        ;     a consistent memory view for our IRQ handler regardless of
-        ;     where user happened to load the PT3.
+        ; This is REQUIRED so we have a consistent memory view regardless of
+        ; where user happened to load the PT3. With ROM on, anything in
+        ; $8000-$FCFF reads as ROM, not the PT3 the user just loaded there.
         ; Writing ANY value to $FF3F enables full RAM mode.
         ; ---------------------------------------------------------------------
         sta     RAM_ENABLE      ; A holds anything; value is irrelevant
