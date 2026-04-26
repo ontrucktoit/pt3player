@@ -2,10 +2,39 @@
 ; pt3_player.inc - Shared equates for PT3 Player library
 ; =============================================================================
 ; This file is included by player source code (player.s) and by host programs
-; (main.asm) that want to call the player via its jump table.
+; that want to call the player via its jump table.
 ;
-; The library is a pure subroutine library: host owns Timer 1 IRQ, calls
-; player_play via JSR each frame (50 Hz PAL or 60 Hz NTSC).
+; THE LIBRARY IS A PURE SUBROUTINE LIBRARY: host owns the Timer 1 IRQ, host
+; calls player_tick via JSR once per frame (50 Hz). All timing, screen, and
+; system state is the host's responsibility — the player only writes to the
+; AY chip via DigiMuz registers ($FD22/$FD23).
+;
+; -----------------------------------------------------------------------------
+; MINIMAL EXAMPLE — embed this into your own program
+; -----------------------------------------------------------------------------
+; The 3 public entry points you need:
+;   PLAYER_INIT      ($3000) - One-time init: zero state, build note/vol tables.
+;   PLAYER_INIT_SONG ($302A) - Load a PT3 file. In: A=hi, X=lo of file address.
+;   PLAYER_TICK      ($302D) - Advance by one frame. Call once per 50 Hz IRQ.
+;
+; A complete embed looks like this (assumes player.bin loaded at $3000,
+; PT3 file loaded at $6000):
+;
+;     .include "pt3_player.inc"
+;
+;     start:
+;             sei
+;             sta     RAM_ENABLE      ; $FF3F: ROM off so PT3 visible at $6000+
+;             jsr     PLAYER_INIT
+;             lda     #>$6000         ; A = hi byte of PT3 address
+;             ldx     #<$6000         ; X = lo byte
+;             jsr     PLAYER_INIT_SONG
+;             ; ... install IRQ handler that JSRs PLAYER_TICK 50 Hz ...
+;             cli
+;             jmp     *               ; halt; IRQ does the work
+;
+; For a complete, ready-to-build reference see src/pt3player.s (standalone)
+; or src/play_template.s (template for embedding a specific PT3 via .incbin).
 ; =============================================================================
 
 ; -----------------------------------------------------------------------------
