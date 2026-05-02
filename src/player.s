@@ -2,12 +2,10 @@
 ; player.s - PT3 Player for Commodore Plus/4 + DigiMuz AY-3-8910
 ; =============================================================================
 ;
-; Native 6502 (CA65) implementation, milestones M1..M6 + R13 envelope fix
-; + pattern-length precompute fix. Runs in Plus/4 RAM at PLAYER_BASE
+; Native 6502 (CA65) implementation. Runs in Plus/4 RAM at PLAYER_BASE
 ; (default $3000) with a public jump table at the base address.
 ;
-; Bit-exact compatible with Vortex Tracker II reference output (verified
-; on the 17-file corpus regression in tests/pt3_corpus/).
+; Bit-exact compatible with Vortex Tracker II reference output.
 ;
 ; LICENSE
 ; -------
@@ -19,15 +17,15 @@
 ; Several modules in this player are 6502 ports of algorithms originally
 ; written for the ZX Spectrum:
 ;
-;   M2 (player_build_note_table) and M3 (player_build_volume_table):
+;   player_build_note_table and player_build_volume_table:
 ;     Port of Ivan Roshin's NoteTableCreator and VolTableCreator from
 ;     Sergey Bulba's VTII10 r7 Z80 player (©2004-2007 S.V.Bulba).
 ;     Per Bulba's release notes: "Ivan Roshin for tone and volume
 ;     tables generators". Ported via the Python intermediate
 ;     pt3_tables.py.
 ;
-;   M5a (player_decode_row), M5b (player_decode_row_all), M6 (player_tick,
-;   m6_compute_pat_len, m6_apply_row_*, etc.):
+;   player_decode_row, player_decode_row_all, player_tick,
+;   m6_compute_pat_len, m6_apply_row_*, etc.:
 ;     Indirect port of Vortex Tracker II's trfuncs.pas
 ;     (©2000-2009 S.V.Bulba, ©2017-2019 Ivan Pirog) via our Python
 ;     reference simulator (tools/pt3_python_sim/pt3_simulator.py).
@@ -58,14 +56,14 @@ jump_table:
         jmp player_is_playing            ; $300F
         jmp player_is_song_ended         ; $3012
         jmp player_set_flags             ; $3015
-        jmp player_build_note_table      ; $3018 — M2
-        jmp player_build_volume_table    ; $301B — M3
-        jmp player_decode_row            ; $301E — M5a
-        jmp player_init_pattern          ; $3021 — M5b
-        jmp player_decode_row_all        ; $3024 — M5b
-        jmp player_play_test_tone        ; $3027 — M6-p1
-        jmp player_init_song             ; $302A — M6
-        jmp player_tick                  ; $302D — M6
+        jmp player_build_note_table      ; $3018
+        jmp player_build_volume_table    ; $301B
+        jmp player_decode_row            ; $301E
+        jmp player_init_pattern          ; $3021
+        jmp player_decode_row_all        ; $3024
+        jmp player_play_test_tone        ; $3027
+        jmp player_init_song             ; $302A
+        jmp player_tick                  ; $302D
 
 ; -----------------------------------------------------------------------------
 player_init:
@@ -1026,7 +1024,7 @@ player_decode_row:
 @b0_not:
         cmp     #$B1
         bne     @setenv
-        ; SKIP: next byte -> ch_nn_skip_<ch>. M5a stores but doesn't act on it.
+        ; SKIP: next byte -> ch_nn_skip_<ch>. player_decode_row stores but doesn't act on it.
         ldy     #0
         lda     (M5_PTR_LO),y
         ldx     dec_current_ch
@@ -1315,7 +1313,7 @@ consume_spec_params:
 ; -----------------------------------------------------------------------------
 player_init_pattern:
         ; A = pattern_number. We need pat_ptr + pattern_number * 6.
-        ; pt3_patterns_ptr_lo/hi is already absolute (M4 converts).
+        ; pt3_patterns_ptr_lo/hi is already absolute (player_load_pt3 converts).
 
         ; Compute pattern_number * 6 into dec_pat_mul_lo/hi (16-bit).
         sta     dec_pat_mul_lo          ; lo = pattern_number (X6 is small, 16-bit mult)
@@ -1346,7 +1344,7 @@ player_init_pattern:
         sta     dec_pat_mul_hi
 
         ; Now pat_entry_addr = pt3_patterns_ptr + pattern_number * 6
-        ; Store into M5_PTR_LO/HI as scratch (reused from M5a; safe).
+        ; Store into M5_PTR_LO/HI as scratch (reused from pattern decoder; safe).
         clc
         lda     pt3_patterns_ptr_lo
         adc     dec_pat_mul_lo
@@ -1586,7 +1584,7 @@ fill_sentinels_ch:
 ; =============================================================================
 ; player_play_test_tone()
 ; =============================================================================
-; M6-p1 smoke test: sets AY to generate a pure tone on channel A.
+; player_play_test_tone smoke test: sets AY to generate a pure tone on channel A.
 ; Writes directly to DigiMuz registers ($FD21/$FD22/$FD23).
 ;
 ; AY setup:
@@ -1663,7 +1661,7 @@ player_play_test_tone:
         rts
 
 ; =============================================================================
-; M6 — Full playback engine
+; Playback engine
 ; =============================================================================
 ; Entry points:
 ;   player_init_song(A=hi, X=lo)  — A/X point to PT3 file in RAM
@@ -1685,7 +1683,7 @@ player_init_song:
         pha
         txa
         pha
-        ; Clear all M6 state from ch_note_a through pb_cur_env_slide_hi
+        ; Clear all playback engine state from ch_note_a through pb_cur_env_slide_hi
         jsr     m6_clear_state
         pla
         tax
@@ -1756,7 +1754,7 @@ player_init_song:
         sta     M5_PTR_HI
         ldy     #0
         lda     (M5_PTR_LO),y             ; byte = pattern_num * 3
-        ; Divide by 3 — but we don't have /3. M5b expects pattern_num (not *3).
+        ; Divide by 3 — but we don't have /3. player_init_pattern expects pattern_num (not *3).
         ; Python: `pat_num = positions[pos_idx] // 3`. We do same.
         jsr     div_by_3
         sta     pat_len_caller_save         ; remember first pat_num across precompute
@@ -1779,7 +1777,7 @@ player_init_song:
         rts
 
 ; -----------------------------------------------------------------------------
-; m6_clear_state: zero all M6 BSS from ch_note_a to pb_cur_env_slide_hi.
+; m6_clear_state: zero all playback engine BSS from ch_note_a to pb_cur_env_slide_hi.
 ; Uses a memset loop based on label arithmetic.
 ; -----------------------------------------------------------------------------
 m6_clear_state:
@@ -1997,7 +1995,7 @@ m6_write_ay_regs:
 ;           if channel end_of_pattern: continue (and all_decoded keeps False indirectly)
 ;           skip_counter--
 ;           if skip_counter > 0: mark decoded; continue
-;           call player_decode_row (M5a, returns A=0 ok / A=1 eop)
+;           call player_decode_row (returns A=0 ok / A=1 eop)
 ;           if eop: continue (will trigger pattern advance)
 ;           else: apply_row_to_channel; consume row spec_cmd / env_period / noise_period
 ;       if all decoded: current_line++; break
@@ -2183,7 +2181,7 @@ m6_get_pat_len:
 ; region containing pat_len_table at song init.
 ;
 ; Caller responsibility:
-;   - player_init_song calls this AFTER M4 metadata is loaded and BEFORE
+;   - player_init_song calls this AFTER header metadata is loaded and BEFORE
 ;     entering the playback loop.
 ;   - After this returns, caller must call player_init_pattern again on
 ;     the actual starting pattern, because m6_compute_pat_len's save/restore
@@ -2359,7 +2357,7 @@ m6_compute_pat_len:
 ; =============================================================================
 ; Reads row_out_ch_<X> at m6_tmp_ch_idx, applies fields to ch_*_<x>.
 ;
-; Row layout (12 bytes per channel, set by M5a player_decode_row):
+; Row layout (12 bytes per channel, set by player_decode_row):
 ;   0: note ($FF=none, $C0=release, else 0..95)
 ;   1: sample ($FF=none, else 1..31)
 ;   2: env_type ($FF=none, 0..15)
@@ -2735,13 +2733,13 @@ m6_apply_row_spec_cmd:
         ;     ton_slide_type = 1
         ;     current_onoff = 0
         ;
-        ; In M6 the M5a row_note can be checked: if (M5_PTR),y at offset 0 != $FF
+        ; The decoded row_note can be checked: if (M5_PTR),y at offset 0 != $FF
         ; AND != $FE (release), then "new note this row".
         ;   $FF = no-note sentinel
-        ;   release: M5a sets ch_flags bit released=1, note retained. Hmm.
-        ;   Actually our M5a writes row_note as raw note value if present, $FF if absent,
+        ;   release: pattern decoder sets ch_flags bit released=1, note retained. Hmm.
+        ;   Actually our pattern decoder writes row_note as raw note value if present, $FF if absent,
         ;   and a release row triggers a different handler.  Let's re-check: when there's
-        ;   a release ('R--'), row.note in Python = 'release' but our M5a row_out[0] = $FF
+        ;   a release ('R--'), row.note in Python = 'release' but our row_out[0] = $FF
         ;   per fill_sentinels (since release is handled via env_type/flags rather than note).
         ;   Simpler heuristic: row_note != $FF means "new note this row".
         ;   For features_level >= 1, "no note this row" also triggers portamento (chain).
@@ -3800,7 +3798,7 @@ vt_tmp:                 .res 1
 
 volume_table:           .res 256
 
-; PT3 header parsed fields (M4)
+; PT3 header parsed fields
 pt3_base_lo:            .res 1
 pt3_base_hi:            .res 1
 pt3_version_char:       .res 1
@@ -3819,7 +3817,7 @@ pt3_position_list_lo:   .res 1
 pt3_position_list_hi:   .res 1
 pt3_parse_error:        .res 1
 
-; M5a pattern decoder state
+; Pattern decoder state
 row_out_ch_a:           .res 14
 row_out_ch_b:           .res 14
 row_out_ch_c:           .res 14
@@ -3868,7 +3866,7 @@ dec_pending_count:      .res 1
 dec_spc_cmd_save:       .res 1
 dec_spc_nparam:         .res 1
 
-; M5b driver state
+; Multi-channel driver state
 ch_skip_counter_a:      .res 1
 ch_skip_counter_b:      .res 1
 ch_skip_counter_c:      .res 1
@@ -3879,7 +3877,7 @@ dec_pat_x2_lo:          .res 1
 dec_pat_x2_hi:          .res 1
 
 ; =============================================================================
-; M6 playback engine BSS
+; Playback engine BSS
 ; =============================================================================
 
 ; Per-channel state (3 channels × N bytes)
@@ -4026,10 +4024,10 @@ pb_cur_env_slide_lo:    .res 1
 pb_cur_env_slide_hi:    .res 1
 
 ; 14 AY registers — shadow values to write to DigiMuz this frame
-; NOTE: shadow_ay already exists at the top of BSS (used by M1). We alias it.
+; NOTE: shadow_ay already exists at the top of BSS (used by AY register write routines). We alias it.
 
 ; -----------------------------------------------------------------------------
-; M6 scratch for compute
+; Playback engine scratch for compute
 ; -----------------------------------------------------------------------------
 m6_tmp_tone_lo:         .res 1
 m6_tmp_tone_hi:         .res 1
