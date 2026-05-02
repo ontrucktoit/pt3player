@@ -35,3 +35,11 @@ src/testtone.cfg
 
 # Internal dev journal — kept locally, not part of public docs
 docs/SESSION_LOG.md
+
+# Internal design/status documents — kept locally for project planning,
+# but not user-facing. Source code with comments is the public reference.
+docs/ARCHITECTURE.md
+docs/STATUS.md
+
+# Untracked artifacts that shouldn't end up in the repo
+*.zip
