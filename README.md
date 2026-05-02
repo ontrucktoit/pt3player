@@ -102,8 +102,7 @@ The build script auto-builds `player.bin` (the engine library) from
   knowledge of timing, screen, or system state. Just writes to AY when called.
 - **Zero hardcoded tables** — note tables and volume tables are generated at
   runtime via Ivan Roshin's `NoteTableCreator` and `VolTableCreator`
-  algorithms, ported line-by-line from Bulba's VTII10 r7 Z80 source. Saves
-  ~1 KB of ROM compared to lookup tables.
+  algorithms, ported from Bulba's VTII10 r7 Z80 source.
 - **PT3 stream is stateful** — same byte means different things depending on
   decoder state. Implementation matches Bulba's `PTDECOD` reference exactly.
 - **Pre-computed pattern lengths** — patterns can have variable lengths
@@ -112,8 +111,7 @@ The build script auto-builds `player.bin` (the engine library) from
   engine compiles to \$1100-\$2565 (~5.2 KB) plus ~876 B of BSS.
 
 For deeper rationale, see [`docs/REFERENCES.md`](docs/REFERENCES.md) and
-the heavily commented `src/player.s` (135 KB of source, half of which is
-prose).
+the heavily commented `src/player.s`.
 
 ---
 
