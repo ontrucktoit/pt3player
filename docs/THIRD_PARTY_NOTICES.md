@@ -88,13 +88,18 @@ with a one-bit version switch.
   port follows Roshin's algorithm with the "new" volume table selected
   by default (see behavioral note below).
 
-**Important behavioral note:** Bulba's original Z80 player selects the
-"old" table for PT3 < 4 and the "new" table for PT3 ≥ 4. VTII (the
-desktop tracker, `trfuncs.pas`) overrides this and uses the "new" table
-for **all** versions when generating reference PSG output. We follow
-VTII's behavior, not the asm player's, so that we match VTII's PSG
-files bit-for-bit. This decision is implemented in `src/player.s`
-(M3 milestone) and matches `trfuncs.pas` `Calc_Volume(...)` behavior.
+**Important behavioral note — volume table selection:** Bulba's original
+Z80 player (`VTII10 r7`) selects the "old" table for PT3 < 4 and the
+"new" table for PT3 ≥ 4. VTII (the desktop tracker, `trfuncs.pas`)
+overrides this and uses the "new" table for **all** versions when
+generating reference PSG output. We follow VTII's behavior, not the
+Z80 asm player's, so that we match VTII's PSG files bit-for-bit. In
+`src/player.s` (M3 milestone), `player_init_song` calls
+`player_build_volume_table` with a hard-coded `pt_version=7` regardless
+of the file's actual PT3 version, which lands in the NEW variant branch
+(`pt_version >= 5` → NEW). This matches `trfuncs.pas`'s `Calc_Volume(...)`
+behavior. This is the single biggest behavioral divergence between our
+player and a strict reading of either Deater's spec or the Z80 player.
 
 ---
 
@@ -104,12 +109,16 @@ These projects helped shape our understanding but **no code from them
 is in this repository**. They are listed here for completeness so future
 maintainers know what to consult.
 
-### Vince Weaver's PT3 specification
+### Vince "Deater" Weaver's PT3 specification
 
 `README_pt3.txt` — informal English-language specification of the PT3
-file format by Vince Weaver. We reference it for terminology and offset
-numbers; we diverge from it whenever VTII's actual behavior contradicts
-the spec. The specific divergences are listed in section 5 below.
+file format by Vince "Deater" Weaver, dated 10 September 2019. This
+was our entry point into the format: Deater's writeup is the only
+comprehensive English-language PT3 documentation we know of, and it
+saved us significant time deciphering the Russian-commented Pascal
+source. Section 5 below lists implementation details we found while
+cross-checking against `trfuncs.pas` — these supplement rather than
+contradict the spec.
 
 ### ZXTune (Vitamin/CAIG)
 
@@ -119,8 +128,8 @@ formats, including PT3.
 - Source: https://bitbucket.org/zxtune/zxtune (GitHub mirror at
   https://github.com/vitamin-caig/zxtune)
 - License: LGPL-3.0
-- We did not port any code from ZXTune. It is listed in
-  `docs/REFERENCES.md` as a tie-breaker / consistency-check resource.
+- We did not port any code from ZXTune. It is mentioned here as a
+  tie-breaker / consistency-check resource.
   Because we did not include any LGPL-3.0 code, the LGPL-3.0 license
   does not propagate to this project.
 
@@ -137,95 +146,69 @@ redistributable from its official site (http://bulba.untergrund.net/).
 
 ---
 
-## 5. Where we diverge from Vince Weaver's `README_pt3.txt`
+## 5. Notes supplementing Deater's `README_pt3.txt`
 
-Weaver's spec is informative but predates several VTII behaviors that
-modern PT3 files rely on. Where the spec and VTII's actual playback
-disagree, **we follow VTII** (because matching VTII bit-exact is the
-goal). The list below is the set of confirmed divergences we found
-during M4–M6 development, each verified against `src/player.s`.
-Future maintainers should treat these as documented design choices,
-not bugs.
+Deater's spec is a fine starting point but inevitably doesn't cover
+every detail you need to match VTII's actual playback bit-exact. The
+notes below are details we found by cross-checking with `trfuncs.pas`
+during M4–M6 development. Future maintainers can treat them as
+footnotes to Deater's writeup — places where his spec is correct but
+terse, or where VTII does something the spec doesn't describe.
 
-### Glossary — VTII names vs Weaver's spec terminology
+### Glossary — VTII names vs Deater's spec terminology
 
 The internal names below come from `trfuncs.pas` (Pascal source of
 Vortex Tracker II). They are the names used in our `src/player.s`
-section headers and in the divergence notes that follow. Readers
-familiar only with Weaver's `README_pt3.txt` may find this mapping
-useful:
+section headers and in the notes that follow. Readers familiar only
+with Deater's `README_pt3.txt` may find this mapping useful:
 
-| Our name (VTII) | Weaver's name / not in spec | What it is |
+| Our name (VTII) | Deater's name / not in spec | What it is |
 |-----------------|------------------------------|------------|
 | `PD_ESAM`       | not named in spec; corresponds to pattern stream opcodes `$10-$1F` | "Envelope + SAMple" command — sets envelope shape (`A & $0F`, with `$10` meaning "env off"), an optional 2-byte big-endian envelope period (only for `$11-$1F`), and a sample number. |
-| `SETENV`        | "envelope shape command" in Weaver's prose | Pattern-stream opcodes `$B0-$BF`. `$B0` means env off, `$B1` is SKIP, `$B2-$BF` set envelope shape via `(opcode & $0F) - 1` followed by a 2-byte big-endian envelope period. |
-| `ORN`           | "ornament" (same name in spec) | Pattern-stream opcodes `$40-$4F`. `$40` (i.e. `ORN=0`) has special meaning — see 5.4. |
-| `tone_table` (`$63`) | "Frequency table" in Weaver | 0=ST, 1=ASM-PT2, 2=ASM-PT3, 3=REAL-PT3. Selects which of the four 96-entry note-frequency tables to use. |
+| `SETENV`        | "envelope shape command" in Deater's prose | Pattern-stream opcodes `$B0-$BF`. `$B0` means env off, `$B1` is SKIP, `$B2-$BF` set envelope shape via `(opcode & $0F) - 1` followed by a 2-byte big-endian envelope period. |
+| `ORN`           | "ornament" (same name in spec) | Pattern-stream opcodes `$40-$4F`. `$40` (i.e. `ORN=0`) has special meaning — see 5.3. |
+| `tone_table` (`$63`) | "Frequency table" in Deater | 0=ST, 1=ASM-PT2, 2=ASM-PT3, 3=REAL-PT3. Selects which of the four 96-entry note-frequency tables to use. |
 
-### 5.1 Header offsets
-
-The PT3 header layout in `src/player.s` matches Weaver's spec for
-fixed offsets and pointer-table starts. **There is no divergence
-here**; this table is included for self-contained reference:
-
-| Offset       | Size       | Field                      | Notes                                                             |
-|--------------|-----------:|----------------------------|-------------------------------------------------------------------|
-| `$63`        | 1 byte     | tone_table                 | 0..3 (see Glossary above)                                         |
-| `$64`        | 1 byte     | initial speed/delay        |                                                                   |
-| `$65`        | 1 byte     | max pattern number + 1     | Weaver's "Number of patterns+1"; bounds pattern-id values         |
-| `$66`        | 1 byte     | loop position (LPosPtr)    | Index into position list to loop back to                          |
-| `$67-$68`    | 2 bytes    | PatsPtrs (LE)              | Pointer to patterns table (3 × 16-bit per pattern: ch A/B/C)      |
-| `$69-$A8`    | 64 bytes   | SamPtrs[32] (LE)           | 32 × 16-bit pointers to sample data                               |
-| `$A9-$C8`    | 32 bytes   | OrnPtrs[16] (LE)           | 16 × 16-bit pointers to ornament data                             |
-| `$C9…`       | variable   | position list              | bytes = pattern_id × 3, `$FF`-terminated                          |
-
-### 5.2 Envelope period is big-endian
+### 5.1 Envelope period is big-endian
 
 This is the **only** big-endian field in PT3. Everywhere else is
 little-endian. Easy to miss in a port. Confirmed in `src/player.s`
 (lines ~954-965 for `PD_ESAM` and ~1042-1063 for `SETENV`): hi byte
 read first, lo byte second.
 
-### 5.3 `SETENV` opcode shape encoding
+### 5.2 `SETENV` opcode shape encoding
 
 Envelope shape = `(opcode_byte & $0F) - 1`. The `-1` adjustment is
-required and not in Weaver's spec. Confirmed in `src/player.s`
+required and not in Deater's spec. Confirmed in `src/player.s`
 (lines ~1041-1046).
 
-### 5.4 `ORN=0` (opcode `$40`) implicitly disables envelope
+### 5.3 `ORN=0` (opcode `$40`) implicitly disables envelope
 
 Pattern-stream opcode `$40` (which sets ornament index to 0) has a
-side effect not described in Weaver: if `row_env_type` was not yet
+side effect not described in the spec: if `row_env_type` was not yet
 set on the current row (i.e. still has the "no envelope set this row"
 sentinel `$FF`), then `$40` will also set `row_env_type = $0F`
 ("envelope explicitly off"). Our implementation does exactly this in
 `src/player.s` (lines ~993-1004).
 
-### 5.5 Volume table selection diverges from Bulba's Z80 player
+---
 
-Bulba's original Z80 player (`VTII10 r7`) uses the "old" volume table
-for PT3 < 4 and the "new" table for PT3 ≥ 4. **VTII (the desktop
-tracker) overrides this and uses the "new" table for ALL versions when
-generating reference PSG output.** Our M3 implementation does the same
-— `player_init_song` calls `player_build_volume_table` with a hard-
-coded `pt_version=7` (`src/player.s` line ~1715), regardless of the
-actual file's PT3 version, which lands in the NEW variant branch
-(`pt_version >= 5` → NEW). We follow VTII, not Bulba's asm player.
-This is the single biggest behavioral divergence between our player
-and a strict reading of either Weaver's spec or the Z80 player. See
-section 3 above for the full rationale.
+## 6. AY chip implementation note — R13 sentinel handling
 
-### 5.6 R13 (envelope shape register) sentinel handling
+This is **not** about the PT3 file format or Deater's spec — it's a
+detail of how a PT3 player should drive the AY-3-8910 chip itself.
 
 PT3 convention: `$FF` in the AY shadow register slot for R13 means
 **skip R13 this frame**. On a real AY chip, **any write to R13
 re-triggers the envelope generator**, restarting it from phase 0.
 Naively writing R13 every frame (as some ports do, including an early
 prototype of this player) causes envelope effects to reset 50× per
-second instead of running their natural course. Our M6 implementation
-correctly skips R13 writes when the shadow value is `$FF`
-(`src/player.s` lines ~1913-1964 — comment block titled "Writing R13
-to AY restarts the envelope generator, even with same value").
+second instead of running their natural course.
+
+Our M6 implementation correctly skips R13 writes when the shadow value
+is `$FF` (`src/player.s` lines ~1913-1964 — comment block titled
+"Writing R13 to AY restarts the envelope generator, even with same
+value").
 
 ---
 
