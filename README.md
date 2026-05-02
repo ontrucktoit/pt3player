@@ -157,8 +157,7 @@ see [`docs/THIRD_PARTY_NOTICES.md`](docs/THIRD_PARTY_NOTICES.md).
   of the R13 envelope-retrigger and pattern-boundary IRQ-overrun bugs.
 - **Claude Opus 4.7** (Anthropic) — CA65 6502 implementation; pair-programmed
   with Kris against a private Python reference simulator and py65 test harness
-  (developed alongside the player but not redistributed, as they derive from
-  Bulba's VTII source).
+  (developed alongside the player but not redistributed).
 
 ---
 
