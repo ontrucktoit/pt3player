@@ -183,14 +183,14 @@ here**; this table is included for self-contained reference:
 
 This is the **only** big-endian field in PT3. Everywhere else is
 little-endian. Easy to miss in a port. Confirmed in `src/player.s`
-(linie ~954-965 for `PD_ESAM` and ~1042-1063 for `SETENV`): hi byte
+(lines ~954-965 for `PD_ESAM` and ~1042-1063 for `SETENV`): hi byte
 read first, lo byte second.
 
 ### 5.3 `SETENV` opcode shape encoding
 
 Envelope shape = `(opcode_byte & $0F) - 1`. The `-1` adjustment is
 required and not in Weaver's spec. Confirmed in `src/player.s`
-(linie ~1041-1046).
+(lines ~1041-1046).
 
 ### 5.4 `ORN=0` (opcode `$40`) implicitly disables envelope
 
@@ -199,7 +199,7 @@ side effect not described in Weaver: if `row_env_type` was not yet
 set on the current row (i.e. still has the "no envelope set this row"
 sentinel `$FF`), then `$40` will also set `row_env_type = $0F`
 ("envelope explicitly off"). Our implementation does exactly this in
-`src/player.s` (linie ~993-1004).
+`src/player.s` (lines ~993-1004).
 
 ### 5.5 Volume table selection diverges from Bulba's Z80 player
 
@@ -208,7 +208,7 @@ for PT3 < 4 and the "new" table for PT3 ≥ 4. **VTII (the desktop
 tracker) overrides this and uses the "new" table for ALL versions when
 generating reference PSG output.** Our M3 implementation does the same
 — `player_init_song` calls `player_build_volume_table` with a hard-
-coded `pt_version=7` (`src/player.s` linia ~1715), regardless of the
+coded `pt_version=7` (`src/player.s` line ~1715), regardless of the
 actual file's PT3 version, which lands in the NEW variant branch
 (`pt_version >= 5` → NEW). We follow VTII, not Bulba's asm player.
 This is the single biggest behavioral divergence between our player
@@ -224,7 +224,7 @@ Naively writing R13 every frame (as some ports do, including an early
 prototype of this player) causes envelope effects to reset 50× per
 second instead of running their natural course. Our M6 implementation
 correctly skips R13 writes when the shadow value is `$FF`
-(`src/player.s` linie ~1913-1964 — comment block titled "Writing R13
+(`src/player.s` lines ~1913-1964 — comment block titled "Writing R13
 to AY restarts the envelope generator, even with same value").
 
 ---
