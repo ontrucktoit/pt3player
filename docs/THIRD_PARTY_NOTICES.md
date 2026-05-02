@@ -142,9 +142,10 @@ redistributable from its official site (http://bulba.untergrund.net/).
 Weaver's spec is informative but predates several VTII behaviors that
 modern PT3 files rely on. Where the spec and VTII's actual playback
 disagree, **we follow VTII** (because matching VTII bit-exact is the
-goal). The following list is the complete set of divergences we found
-during M4–M6 development. Future maintainers should treat these as
-documented design choices, not bugs.
+goal). The list below is the set of confirmed divergences we found
+during M4–M6 development, each verified against `src/player.s`.
+Future maintainers should treat these as documented design choices,
+not bugs.
 
 ### Glossary — VTII names vs Weaver's spec terminology
 
@@ -156,20 +157,16 @@ useful:
 
 | Our name (VTII) | Weaver's name / not in spec | What it is |
 |-----------------|------------------------------|------------|
-| `PD_ESAM`       | not named in spec; corresponds to pattern stream opcodes `$10-$1F` | "Envelope + SAMple" command — sets envelope shape, optional envelope period (2 bytes), and a sample number to apply. Despite Weaver's spec implying 4-byte length for envelope-bearing variants, real files (and `trfuncs.pas`) use 3 bytes (see 5.5). |
-| `T_PACK`        | not in spec                  | Compact, packed encoding of one channel's track-state data inside a pattern. The pattern-row decoder unpacks `T_PACK` bytes into a `T1_` slot (one per channel) where the per-tick state machine reads them. |
-| `T1_` slot      | not in spec                  | Per-channel scratch area where unpacked `T_PACK` data lives during pattern playback (one slot for each of the three AY channels A/B/C). |
-| `SETENV`        | "envelope shape command" in Weaver's prose | Pattern-stream opcode that selects one of the 8 AY envelope shapes (R13 values 0/1/4/8-15). VTII encodes shape as `(opcode & 0x0F) - 1`; the `-1` is non-obvious (see 5.4). |
-| `ORN`           | "ornament" (same name in spec) | Index into the file's ornament table. `ORN=0` has special meaning (see 5.6). |
+| `PD_ESAM`       | not named in spec; corresponds to pattern stream opcodes `$10-$1F` | "Envelope + SAMple" command — sets envelope shape (`A & $0F`, with `$10` meaning "env off"), an optional 2-byte big-endian envelope period (only for `$11-$1F`), and a sample number. |
+| `SETENV`        | "envelope shape command" in Weaver's prose | Pattern-stream opcodes `$B0-$BF`. `$B0` means env off, `$B1` is SKIP, `$B2-$BF` set envelope shape via `(opcode & $0F) - 1` followed by a 2-byte big-endian envelope period. |
+| `ORN`           | "ornament" (same name in spec) | Pattern-stream opcodes `$40-$4F`. `$40` (i.e. `ORN=0`) has special meaning — see 5.4. |
 | `tone_table` (`$63`) | "Frequency table" in Weaver | 0=ST, 1=ASM-PT2, 2=ASM-PT3, 3=REAL-PT3. Selects which of the four 96-entry note-frequency tables to use. |
 
-### 5.1 Header offsets — pointer tables
+### 5.1 Header offsets
 
 The PT3 header layout in `src/player.s` matches Weaver's spec for
-**fixed offsets and pointer-table starts** (Weaver got these right);
-divergences below concern interpretation, not layout.
-
-For reference, the layout we (and Weaver) use:
+fixed offsets and pointer-table starts. **There is no divergence
+here**; this table is included for self-contained reference:
 
 | Offset       | Size       | Field                      | Notes                                                             |
 |--------------|-----------:|----------------------------|-------------------------------------------------------------------|
@@ -182,66 +179,43 @@ For reference, the layout we (and Weaver) use:
 | `$A9-$C8`    | 32 bytes   | OrnPtrs[16] (LE)           | 16 × 16-bit pointers to ornament data                             |
 | `$C9…`       | variable   | position list              | bytes = pattern_id × 3, `$FF`-terminated                          |
 
-### 5.2 Position list is double-encoded
-
-The position list is terminated by `$FF` (Weaver's spec is correct on
-this). However, `trfuncs.pas` and the VTII Z80 player use **two
-independent ways** of finding the end: (a) walk until `$FF`, and (b)
-use the patterns-table pointer at `$67-68` (the position list ends just
-before patterns-table data begins). Real files agree on both; our M4
-parser cross-checks them as a sanity gate.
-
-### 5.3 Envelope period is big-endian
+### 5.2 Envelope period is big-endian
 
 This is the **only** big-endian field in PT3. Everywhere else is
-little-endian. Easy to miss in a port.
+little-endian. Easy to miss in a port. Confirmed in `src/player.s`
+(linie ~954-965 for `PD_ESAM` and ~1042-1063 for `SETENV`): hi byte
+read first, lo byte second.
 
-### 5.4 `SETENV` opcode shape encoding
+### 5.3 `SETENV` opcode shape encoding
 
-Envelope shape = `(opcode_byte & 0x0F) - 1`. Subtracting 1 is required
-and not in the spec.
+Envelope shape = `(opcode_byte & $0F) - 1`. The `-1` adjustment is
+required and not in Weaver's spec. Confirmed in `src/player.s`
+(linie ~1041-1046).
 
-### 5.5 `PD_ESAM` opcode consumes 3 bytes, not 4
+### 5.4 `ORN=0` (opcode `$40`) implicitly disables envelope
 
-(See Glossary for what `PD_ESAM` is.) Weaver's spec implies 4 bytes
-for the envelope-bearing variants. Real files use 3:
+Pattern-stream opcode `$40` (which sets ornament index to 0) has a
+side effect not described in Weaver: if `row_env_type` was not yet
+set on the current row (i.e. still has the "no envelope set this row"
+sentinel `$FF`), then `$40` will also set `row_env_type = $0F`
+("envelope explicitly off"). Our implementation does exactly this in
+`src/player.s` (linie ~993-1004).
 
-- Opcode byte (`$11-$1F`)
-- Envelope period high byte
-- Envelope period low byte (note: big-endian — see 5.3)
-
-…with the sample-number byte coming from a separate pattern-stream
-slot, not the `PD_ESAM` payload. Confirmed against `trfuncs.pas`
-state-machine length tables.
-
-### 5.6 `ORN=0` implies envelope off (sometimes)
-
-If a row sets `ORN=0` and `env_type` was not already set on that channel,
-the envelope is disabled implicitly. Weaver's spec doesn't mention this
-edge case.
-
-### 5.7 `T_PACK` is unpacked into the `T1_` slot in REVERSE byte order
-
-(See Glossary for what `T_PACK` and `T1_` are.) When the pattern-row
-decoder unpacks a `T_PACK`-encoded channel's track data into the per-
-channel `T1_` scratch slot, the bytes are written **in reverse order**
-(highest target address first, lowest last). This is what `trfuncs.pas`
-does. Weaver's spec does not describe `T_PACK` packing or unpacking at
-all, so there is no "diverge from Weaver" here per se — but readers
-porting from a Weaver-only understanding will not have this detail and
-will get scrambled track data if they don't reverse the unpack.
-
-### 5.8 Volume table selection diverges from Bulba's Z80 player
+### 5.5 Volume table selection diverges from Bulba's Z80 player
 
 Bulba's original Z80 player (`VTII10 r7`) uses the "old" volume table
 for PT3 < 4 and the "new" table for PT3 ≥ 4. **VTII (the desktop
 tracker) overrides this and uses the "new" table for ALL versions when
-generating reference PSG output.** We follow VTII, not Bulba's asm
-player. This is the single biggest behavioral divergence between our
-player and a strict reading of either the spec or the Z80 player. See
-`docs/THIRD_PARTY_NOTICES.md` section 3 for the full rationale.
+generating reference PSG output.** Our M3 implementation does the same
+— `player_init_song` calls `player_build_volume_table` with a hard-
+coded `pt_version=7` (`src/player.s` linia ~1715), regardless of the
+actual file's PT3 version, which lands in the NEW variant branch
+(`pt_version >= 5` → NEW). We follow VTII, not Bulba's asm player.
+This is the single biggest behavioral divergence between our player
+and a strict reading of either Weaver's spec or the Z80 player. See
+section 3 above for the full rationale.
 
-### 5.9 R13 (envelope shape register) sentinel handling
+### 5.6 R13 (envelope shape register) sentinel handling
 
 PT3 convention: `$FF` in the AY shadow register slot for R13 means
 **skip R13 this frame**. On a real AY chip, **any write to R13
@@ -249,7 +223,9 @@ re-triggers the envelope generator**, restarting it from phase 0.
 Naively writing R13 every frame (as some ports do, including an early
 prototype of this player) causes envelope effects to reset 50× per
 second instead of running their natural course. Our M6 implementation
-correctly skips R13 writes when the shadow value is `$FF`.
+correctly skips R13 writes when the shadow value is `$FF`
+(`src/player.s` linie ~1913-1964 — comment block titled "Writing R13
+to AY restarts the envelope generator, even with same value").
 
 ---
 
