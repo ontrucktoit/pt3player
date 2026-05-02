@@ -164,8 +164,7 @@ For per-file attribution and license carve-outs, see
   listening tests on YAPE and Plus/4 + DigiMuz hardware, that drove diagnosis
   of the R13 envelope-retrigger and pattern-boundary IRQ-overrun bugs.
 - **Claude Opus 4.7** (Anthropic) — Python reference simulator, CA65 6502
-  implementation, py65 test harness — pair-programmed with Kris, invoice
-  settled in Kindzmarauli. 🍷
+  implementation, py65 test harness — pair-programmed with Kris.
 
 ---
 
