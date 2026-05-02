@@ -24,8 +24,21 @@ tables and the full PT3 effect set.
 
 ## Embedding the player in your own program
 
+The player exposes a 16-entry jump table at `$1100`. For most users, only the
+first three matter (init, load song, tick). The rest are exposed for testing
+and advanced uses.
 
-```
+| Address | Symbol               | Description                                                |
+|---------|----------------------|------------------------------------------------------------|
+| `$1100` | `PLAYER_INIT`        | One-time init: zero state, build note/volume tables        |
+| `$112A` | `PLAYER_INIT_SONG`   | Load PT3 file. In: `A`=hi, `X`=lo of file address          |
+| `$112D` | `PLAYER_TICK`        | Advance by one frame. Call once per 50 Hz IRQ              |
+
+The remaining entries (`PLAYER_BUILD_NOTE_TABLE`, `PLAYER_DECODE_ROW`, etc.)
+are documented in `src/pt3_player.inc` and used primarily by the regression
+harness in `tests/harness.py`.
+
+---
 
 For a complete reference, see:
 
@@ -50,25 +63,6 @@ $8000-$BFFF   Free RAM (with ROM disabled at startup)
 $FD21-$FD23   DigiMuz AY-3-8910 register interface
 ```
 
----
-
-## Public API
-
-The player exposes a 16-entry jump table at `$1100`. For most users, only the
-first three matter (init, load song, tick). The rest are exposed for testing
-and advanced uses.
-
-| Address | Symbol               | Description                                                |
-|---------|----------------------|------------------------------------------------------------|
-| `$1100` | `PLAYER_INIT`        | One-time init: zero state, build note/volume tables        |
-| `$112A` | `PLAYER_INIT_SONG`   | Load PT3 file. In: `A`=hi, `X`=lo of file address          |
-| `$112D` | `PLAYER_TICK`        | Advance by one frame. Call once per 50 Hz IRQ              |
-
-The remaining entries (`PLAYER_BUILD_NOTE_TABLE`, `PLAYER_DECODE_ROW`, etc.)
-are documented in `src/pt3_player.inc` and used primarily by the regression
-harness in `tests/harness.py`.
-
----
 
 ## Test corpus
 
