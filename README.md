@@ -147,7 +147,7 @@ see [`docs/THIRD_PARTY_NOTICES.md`](docs/THIRD_PARTY_NOTICES.md).
 
 ### Project work
 
-- **Krzycho751** (project owner) — test methodology, bit-exact validation strategy, 
+- **ontrucktoit** (project owner) — test methodology, bit-exact validation strategy, 
   listening tests on YAPE and Plus/4 + DigiMuz hardware, that drove diagnosis
   of the R13 envelope-retrigger and pattern-boundary IRQ-overrun bugs.
 - **Claude Opus 4.7** (Anthropic) — CA65 6502 implementation; pair-programmed
