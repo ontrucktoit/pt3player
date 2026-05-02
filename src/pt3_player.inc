@@ -33,8 +33,8 @@
 ;             cli
 ;             jmp     *               ; halt; IRQ does the work
 ;
-; For a complete, ready-to-build reference see src/pt3player.s (standalone)
-; or src/play_template.s (template for embedding a specific PT3 via .incbin).
+; For a complete, ready-to-build reference see src/play_template.s
+; (template for embedding a specific PT3 via .incbin).
 ; =============================================================================
 
 ; -----------------------------------------------------------------------------

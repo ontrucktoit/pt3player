@@ -12,9 +12,8 @@ required because PRG files load contiguously from the load address: any
 gap without relinking the player to a higher address (which would defeat
 the goal of having the player live in a single canonical location).
 
-For the standalone version (where the user loads the PT3 manually via the
-monitor), see tools/build_pt3player.py — which builds a much smaller .prg
-because it doesn't bundle the PT3.
+The output PRG is self-contained: load it on YAPE or real Plus/4 hardware
+(with DigiMuz expansion), RUN, and the embedded PT3 plays automatically.
 
 Usage: python3 tools/build_play_prg.py <pt3_path> [output_name]
 """

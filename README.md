@@ -34,7 +34,8 @@ uses.
 | `$112D` | `PLAYER_TICK`        | Advance by one frame. Call at 50 Hz (PT3 spec; same on PAL and NTSC).  |
 
 If you embed the player in your own program, you are responsible for 
-calling PLAYER_TICK at 50 Hz — see src/pt3player.s lines ~184-200 for reference.
+calling PLAYER_TICK at 50 Hz — see src/play_template.s for a reference IRQ
+handler that does this on Plus/4 (PAL/NTSC auto-detect, Timer 1 setup).
 
 The remaining entries (`PLAYER_BUILD_NOTE_TABLE`, `PLAYER_DECODE_ROW`, etc.)
 are documented in `src/pt3_player.inc` and exposed for advanced users who need
@@ -44,12 +45,10 @@ fine-grained access to the player's internals.
 
 For a complete reference, see:
 
-- **`src/pt3player.s`** — the standalone player
-- **`src/play_template.s`** — template that bundles a specific PT3 via `.incbin`
-- **`src/pt3_player.inc`** — full equates list with all jump table entries
-
-Both reference programs include PAL/NTSC auto-detection and clean-screen
-startup, ~250 bytes of bootstrap code.
+- **`src/play_template.s`** — full reference program: bundles a specific PT3
+  via `.incbin`, sets up Timer 1 IRQ at 50 Hz with PAL/NTSC auto-detection,
+  installs a clean-screen runtime (~250 bytes of bootstrap code).
+- **`src/pt3_player.inc`** — full equates list with all jump table entries.
 
 ---
 
@@ -60,9 +59,9 @@ $0000-$00FF   Zero page (player uses $D8-$E8, the 17 B "OS-safe" area)
 $1001-$10FF   BASIC stub + startup code (host program)
 $1100-$2565   PT3 player library (engine + RODATA, ~5.2 KB)
 $2566-$28D1   Player BSS (allocated at runtime)
-$4000-$7FFF   PT3 song data (default; configurable in pt3player.s)
-$8000-$BFFF   Free RAM (BASIC ROM area; standalone player disables ROM
-              via $FF3F to expose this region — library users may keep
+$4000-$7FFF   PT3 song data (default; configurable in play_template.s)
+$8000-$BFFF   Free RAM (BASIC ROM area; reference program disables
+              ROM via $FF3F to expose this region — library users may keep
               ROM enabled if they don't need this RAM)
 $FD21-$FD23   DigiMuz AY-3-8910 register interface
 ```
@@ -88,12 +87,12 @@ Requirements: [`cc65`](https://cc65.github.io/) toolchain (`ca65` + `ld65`),
 Python 3.10+ (for the build scripts).
 
 ```bash
-# Build standalone pt3player.prg (loads PT3 from disk at runtime)
-python3 tools/build_pt3player.py
-
 # Bundle a specific PT3 into a self-contained .prg (PT3 embedded inside)
 python3 tools/build_play_prg.py path/to/your.pt3
 ```
+
+The build script auto-builds `player.bin` (the engine library) from
+`src/player.s` if it's not already present in `build/`.
 
 ---
 
