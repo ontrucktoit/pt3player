@@ -2,7 +2,7 @@
 
 This project's PT3 player would not exist without the work of three
 people who built and documented the Vortex Tracker II (VTII) ecosystem
-on ZX Spectrum, MSX, and Windows:
+on ZX Spectrum and Windows:
 
 - **Sergey Bulba** (S.V.Bulba) — author of the VTII Z80 player and the
   Pascal source for the desktop tracker.
@@ -16,13 +16,13 @@ found.
 
 ---
 
-## 1. trfuncs.pas → pt3_simulator.py + pt3_pattern_decoder.py
+## 1. trfuncs.pas → src/player.s
 
 **What we use:** the high-level PT3 pattern decoder and per-tick playback
-state machine. Our Python implementation is a line-by-line port; many
-inline comments in `tools/pt3_python_sim/pt3_simulator.py` and
-`pt3_pattern_decoder.py` cite specific line numbers in `trfuncs.pas`
-for non-obvious behaviors.
+state machine. We developed a Python reference simulator as a line-by-line
+port of `trfuncs.pas` (with inline comments citing specific line numbers
+for non-obvious behaviors), then translated that simulator into 6502
+assembly. The Python simulator is for our internal tests.
 
 **Original source:**
 - Author: Sergey Bulba © 2000–2009
@@ -32,14 +32,12 @@ for non-obvious behaviors.
   https://github.com/z00m128/vortextracker25/blob/main/trfuncs.pas
 - Original distribution: http://bulba.untergrund.net/vortex_e.htm
 
-**Files in this repository derived from `trfuncs.pas`:**
-- `tools/pt3_python_sim/pt3_simulator.py` — playback engine
-- `tools/pt3_python_sim/pt3_pattern_decoder.py` — pattern stream decoder
-
-The C/A65 player (`src/player.s`) inherits this logic transitively
-through the Python port, with attribution in the relevant section
-headers (M5a pattern decoder, M5b multi-channel driver, M6 playback
-engine, `m6_compute_pat_len`).
+**Files in this repository derived (transitively, via the private Python
+port) from `trfuncs.pas`:**
+- `src/player.s` — pattern stream decoder (`player_decode_row`),
+  multi-channel driver (`player_decode_row_all`), playback engine
+  (`player_tick`), `m6_compute_pat_len`. The relevant section headers
+  in `player.s` carry inline attribution back to `trfuncs.pas`.
 
 ---
 
@@ -66,8 +64,9 @@ tables for each.
   also widely mirrored, e.g. http://mus.msx.click/index.php?title=PROTRACKER372_PT3PLAY_H)
 
 **Files in this repository derived from NoteTableCreator:**
-- `tools/pt3_python_sim/pt3_tables.py` — function `build_note_table()`
-- `src/player.s` — `player_build_note_table` (M2 milestone)
+- `src/player.s` — `player_build_note_table`. The 6502
+  port mirrors Roshin's algorithm structure verbatim; the seed table
+  values are unchanged.
 
 ---
 
@@ -85,17 +84,22 @@ with a one-bit version switch.
 - Distribution: see (2) above
 
 **Files in this repository derived from VolTableCreator:**
-- `tools/pt3_python_sim/pt3_tables.py` — function `build_volume_table()`
-- `src/player.s` — `player_build_volume_table` (M3 milestone)
+- `src/player.s` — `player_build_volume_table`. The 6502
+  port follows Roshin's algorithm with the "new" volume table selected
+  by default (see behavioral note below).
 
-**Important behavioral note:** Bulba's original Z80 player selects the
-"old" table for PT3 < 4 and the "new" table for PT3 ≥ 4. VTII (the
-desktop tracker, `trfuncs.pas`) overrides this and uses the "new" table
-for **all** versions when generating reference PSG output. We follow
-VTII's behavior, not the asm player's, so that we match VTII's PSG
-files bit-for-bit. This decision is documented in
-`tools/pt3_python_sim/pt3_simulator.py` near the `build_volume_table(pt_version=7)`
-call site.
+**Important behavioral note — volume table selection:** Bulba's original
+Z80 player (`VTII10 r7`) selects the "old" table for PT3 < 4 and the
+"new" table for PT3 ≥ 4. VTII (the desktop tracker, `trfuncs.pas`)
+overrides this and uses the "new" table for **all** versions when
+generating reference PSG output. We follow VTII's behavior, not the
+Z80 asm player's, so that we match VTII's PSG files bit-for-bit. In
+`src/player.s`, `player_init_song` calls
+`player_build_volume_table` with a hard-coded `pt_version=7` regardless
+of the file's actual PT3 version, which lands in the NEW variant branch
+(`pt_version >= 5` → NEW). This matches `trfuncs.pas`'s `Calc_Volume(...)`
+behavior. This is the single biggest behavioral divergence between our
+player and a strict reading of either Deater's spec or the Z80 player.
 
 ---
 
@@ -105,12 +109,22 @@ These projects helped shape our understanding but **no code from them
 is in this repository**. They are listed here for completeness so future
 maintainers know what to consult.
 
-### Vince Weaver's PT3 specification
+### Vince "Deater" Weaver's PT3 specification
 
 `README_pt3.txt` — informal English-language specification of the PT3
-file format. We reference it for terminology and offset numbers; we
-diverge from it whenever VTII's actual behavior contradicts the spec
-(see the design notes in `tools/pt3_python_sim/pt3_simulator.py`).
+file format by Vince "Deater" Weaver, dated 10 September 2019. This
+was our entry point into the format: Deater's writeup is the only
+comprehensive English-language PT3 documentation we know of, and it
+saved us significant time deciphering the Russian-commented Pascal
+source.
+
+The spec covers everything we needed for the player's pattern decoder
+faithfully. One small detail it leaves ambiguous: under opcode `$40-$4f`
+("set ornament") it notes "possibly setting 0 counts as disabling" —
+in practice, `$40` (i.e. `ORN=0`) also implicitly disables the envelope
+when no envelope was set on the current row (`row_env_type` still has
+the sentinel `$FF`). Our implementation reflects this in `src/player.s`
+(lines ~993-1004), matching `trfuncs.pas`.
 
 ### ZXTune (Vitamin/CAIG)
 
@@ -120,22 +134,40 @@ formats, including PT3.
 - Source: https://bitbucket.org/zxtune/zxtune (GitHub mirror at
   https://github.com/vitamin-caig/zxtune)
 - License: LGPL-3.0
-- We did not port any code from ZXTune. It is listed in
-  `docs/REFERENCES.md` as a tie-breaker / consistency-check resource.
+- We did not port any code from ZXTune. It is mentioned here as a
+  tie-breaker / consistency-check resource.
   Because we did not include any LGPL-3.0 code, the LGPL-3.0 license
   does not propagate to this project.
 
 ### Vortex Tracker II (the binary application)
 
 The Windows desktop tracker we used to **generate reference PSG dump
-files** for our test corpus. The `.psg` files in
-`tools/pt3_python_sim/test_files/` were produced by VTII's "Save as PSG"
-feature on PT3 modules composed by their respective musicians (each
-file has its composer credited in its filename). VTII the application
-is freely redistributable from its official site
-(http://bulba.untergrund.net/), and the music modules retain their
-composers' rights — they are included here under fair use for testing
-and reference purposes only and are not relicensed by this project.
+files** during development for bit-exact regression testing. PSG files
+were produced by VTII's "Save as PSG" feature on PT3 modules composed
+by their respective musicians; this corpus is **not** redistributed in
+this repository — the music modules retain their composers' rights, and
+users wishing to test the player should bring their own PT3 files
+(see README for suggested sources). VTII the application is freely
+redistributable from its official site (http://bulba.untergrund.net/).
+
+---
+
+## 5. AY chip implementation note — R13 sentinel handling
+
+This is **not** about the PT3 file format or Deater's spec — it's a
+detail of how a PT3 player should drive the AY-3-8910 chip itself.
+
+PT3 convention: `$FF` in the AY shadow register slot for R13 means
+**skip R13 this frame**. On a real AY chip, **any write to R13
+re-triggers the envelope generator**, restarting it from phase 0.
+Naively writing R13 every frame (as some ports do, including an early
+prototype of this player) causes envelope effects to reset 50× per
+second instead of running their natural course.
+
+Our implementation correctly skips R13 writes when the shadow value
+is `$FF` (`src/player.s` lines ~1913-1964 — comment block titled
+"Writing R13 to AY restarts the envelope generator, even with same
+value").
 
 ---
 

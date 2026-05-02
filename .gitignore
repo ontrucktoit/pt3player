@@ -8,3 +8,38 @@ build/*.bin
 # Python
 __pycache__/
 *.pyc
+
+# Private dev tooling — kept locally, not part of public release.
+# These use third-party reference data (VTII, etc.) and are not for redistribution.
+tests/
+tools/pt3_python_sim/
+tools/diagnose_*.py
+tools/gen_m6_*.py
+tools/profile_*.py
+tools/vice_digimuz_trace.py
+tools/corpus_test.py
+
+# PT3 / PSG / TXT corpus files — separate copyrights, not bundled.
+*.pt3
+*.psg
+*.txt
+
+# Test programs from early development — kept locally only
+src/m1_test*.s
+src/m1_test*.cfg
+src/m2_test*.s
+src/m2_test*.cfg
+src/loadaddr.s
+src/testtone.s
+src/testtone.cfg
+
+# Internal dev journal — kept locally, not part of public docs
+docs/SESSION_LOG.md
+
+# Internal design/status documents — kept locally for project planning,
+# but not user-facing. Source code with comments is the public reference.
+docs/ARCHITECTURE.md
+docs/STATUS.md
+
+# Untracked artifacts that shouldn't end up in the repo
+*.zip

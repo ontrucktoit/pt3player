@@ -12,8 +12,6 @@
 ; past the player's BSS region and on a clean 16-bit boundary. Up to
 ; ~16 KB of PT3 fits before colliding with the BASIC ROM area at $8000.
 ;
-; For a player that loads ANY PT3 manually via the machine monitor (no embed),
-; see src/pt3player.s instead.
 ;
 ; LAYOUT
 ; ------
@@ -108,17 +106,34 @@ next_line:
 start:
         sei
 
+        ; ---------------------------------------------------------------------
         ; Disable display (clear bit 4 of $FF06).
+        ; This makes the entire screen show as uniform border color, avoiding
+        ; the black-and-white raster-bar artifact you'd see otherwise: with
+        ; ROM disabled, the character generator points at uninitialized RAM,
+        ; so text mode renders garbage as alternating-bit "stripes".
+        ; ---------------------------------------------------------------------
         lda     TED_VIDEO_MODE
         and     #%11101111      ; clear DEN (Display Enable)
         sta     TED_VIDEO_MODE
 
+        ; ---------------------------------------------------------------------
         ; Mute TED sound (preserve other bits in $FF11).
+        ; Bottom 3 bits of $FF11 = volume; clearing them silences TED sound
+        ; without affecting bits 4 (ECM) or 7 (test bit). We don't touch
+        ; $FF12 because writing to it inadvertently changes display mode bits
+        ; (BMM = bitmap mode bit 5), which we don't want.
+        ; ---------------------------------------------------------------------
         lda     TED_SOUND_VOL
         and     #%11111000      ; clear volume bits, keep everything else
         sta     TED_SOUND_VOL
 
-        ; Switch all ROMs off (ROM->RAM).
+        ; ---------------------------------------------------------------------
+        ; Switch all ROMs off (full RAM mode).
+        ; This is REQUIRED so we have a consistent memory view: with ROM on,
+        ; anything in $8000-$FCFF reads as ROM, not the RAM contents we put
+        ; there. Writing ANY value to $FF3F enables full RAM mode.
+        ; ---------------------------------------------------------------------
         sta     RAM_ENABLE      ; A holds anything; value is irrelevant
 
         ; Establish clean player state (zeros all 14 AY regs via DigiMuz).

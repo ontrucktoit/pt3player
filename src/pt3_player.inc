@@ -33,8 +33,8 @@
 ;             cli
 ;             jmp     *               ; halt; IRQ does the work
 ;
-; For a complete, ready-to-build reference see src/pt3player.s (standalone)
-; or src/play_template.s (template for embedding a specific PT3 via .incbin).
+; For a complete, ready-to-build reference see src/play_template.s
+; (template for embedding a specific PT3 via .incbin).
 ; =============================================================================
 
 ; -----------------------------------------------------------------------------
@@ -105,9 +105,10 @@ ZP_TEMP2_LO         = $E4
 ZP_TEMP2_HI         = $E5
 ZP_SCRATCH1         = $E6
 ZP_SCRATCH2         = $E7
-; M5a decoder uses these ZP aliases (same physical location as ZP_TEMP*)
-; These are shared with apply_corrections (M2), which runs during player_init
-; and player_build_note_table — never concurrent with pattern decoder.
+; The pattern row decoder uses these ZP aliases (same physical location as
+; ZP_TEMP*). They are shared with apply_corrections, which runs during
+; player_init and player_build_note_table — never concurrent with the
+; pattern decoder.
 M5_PTR_LO           = ZP_TEMP_LO      ; working copy of stream pointer
 M5_PTR_HI           = ZP_TEMP_HI
 M5_OUT_LO           = ZP_TEMP2_LO     ; pointer to row_out_ch<current>
