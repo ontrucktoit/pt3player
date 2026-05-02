@@ -92,7 +92,8 @@ python3 tools/build_play_prg.py path/to/your.pt3
 ```
 
 The build script auto-builds `player.bin` (the engine library) from
-`src/player.s` if it's not already present in `build/`.
+`src/player.s` if it's not already present in `build/`. The final
+`<name>_play.prg` (player + embedded PT3) lands in `build/` as well.
 
 ---
 
