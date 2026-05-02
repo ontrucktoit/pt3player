@@ -18,9 +18,64 @@ because it doesn't bundle the PT3.
 
 Usage: python3 tools/build_play_prg.py <pt3_path> [output_name]
 """
-import os, sys, hashlib
+import os, sys, hashlib, subprocess
 
-BUILD = 'build'
+# Path to script's project root (for resolving src/, build/)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC  = os.path.join(ROOT, 'src')
+
+
+def _find_cc65():
+    """Locate cc65 toolchain (ca65 + ld65). Returns dir to prepend to PATH, or None."""
+    candidates = [
+        '/home/linumax/cc65/usr/bin',
+        '/usr/local/cc65/bin',
+        '/opt/cc65/bin',
+    ]
+    for c in candidates:
+        if os.path.isfile(os.path.join(c, 'ca65')):
+            return c
+    for d in os.environ.get('PATH', '').split(':'):
+        if d and os.path.isfile(os.path.join(d, 'ca65')):
+            return None  # already on PATH
+    raise SystemExit("ERROR: ca65/ld65 not found. Install cc65 toolchain.")
+
+
+def _run(cmd, env=None):
+    print(f"  $ {' '.join(cmd)}")
+    r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(r.stdout)
+        print(r.stderr)
+        raise SystemExit(f"Command failed: {' '.join(cmd)}")
+
+
+def _ensure_artifacts():
+    """Build player.bin and play_template_startup.bin from src/ if not present."""
+    os.makedirs(BUILD, exist_ok=True)
+    cc65_dir = _find_cc65()
+    env = os.environ.copy()
+    if cc65_dir:
+        env['PATH'] = f"{cc65_dir}:{env.get('PATH','')}"
+
+    player = os.path.join(BUILD, 'player.bin')
+    if not os.path.exists(player):
+        print("[1/2] Building player.bin from src/player.s...")
+        _run(['ca65', os.path.join(SRC, 'player.s'),
+              '-o', os.path.join(BUILD, 'player.o')], env=env)
+        _run(['ld65', '-C', os.path.join(SRC, 'player.cfg'),
+              os.path.join(BUILD, 'player.o'), '-o', player], env=env)
+
+    startup = os.path.join(BUILD, 'play_template_startup.bin')
+    if not os.path.exists(startup):
+        print("[2/2] Building play_template_startup.bin from src/play_template.s...")
+        _run(['ca65', os.path.join(SRC, 'play_template.s'),
+              '-o', os.path.join(BUILD, 'play_template.o')], env=env)
+        _run(['ld65', '-C', os.path.join(SRC, 'play_template.cfg'),
+              os.path.join(BUILD, 'play_template.o'),
+              '-o', startup], env=env)
+
+BUILD = os.path.join(ROOT, 'build')
 
 PLAYER_LOAD_ADDR = 0x1100        # where player.bin is linked
 PT3_LOAD_ADDR    = 0x4000        # where PT3 lives in memory
@@ -31,6 +86,9 @@ STARTUP_END      = 0x1100        # startup occupies $1001-$10FF (file addr $0000
 def build(pt3_path, out_name=None):
     if out_name is None:
         out_name = os.path.splitext(os.path.basename(pt3_path))[0] + '_play.prg'
+
+    # Ensure player.bin and play_template_startup.bin exist (auto-build if not)
+    _ensure_artifacts()
 
     startup = open(f'{BUILD}/play_template_startup.bin', 'rb').read()
     player  = open(f'{BUILD}/player.bin', 'rb').read()

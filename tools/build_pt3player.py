@@ -67,20 +67,28 @@ def main():
     player  = os.path.join(BUILD, 'player.bin')
     out_prg = os.path.join(BUILD, 'pt3player.prg')
 
+    # Step 1: build player.bin from src/player.s if missing
+    # (player.bin is the 5.2 KB engine library at $1100-$2565)
     if not os.path.exists(player):
-        raise SystemExit(f"ERROR: {player} not found. Build the player engine first "
-                         "(e.g. via tests/harness.py m6).")
+        print("[1/4] Building player.bin from src/player.s...")
+        player_s   = os.path.join(SRC,   'player.s')
+        player_cfg = os.path.join(SRC,   'player.cfg')
+        player_o   = os.path.join(BUILD, 'player.o')
+        run(['ca65', player_s, '-o', player_o], env=env)
+        run(['ld65', '-C', player_cfg, player_o, '-o', player], env=env)
+        if not os.path.exists(player):
+            raise SystemExit(f"ERROR: ld65 ran but {player} was not produced")
 
-    # Step 1: assemble pt3player.s
-    print("[1/3] Assembling pt3player.s...")
+    # Step 2: assemble pt3player.s (the standalone wrapper around player.bin)
+    print("[2/4] Assembling pt3player.s...")
     run(['ca65', src_s, '-o', obj], env=env)
 
-    # Step 2: link
-    print("[2/3] Linking with pt3player.cfg...")
+    # Step 3: link wrapper
+    print("[3/4] Linking with pt3player.cfg...")
     run(['ld65', '-C', src_cfg, obj, '-o', startup], env=env)
 
-    # Step 3: assemble final .prg
-    print("[3/3] Building final pt3player.prg...")
+    # Step 4: assemble final .prg by concatenating startup + player.bin
+    print("[4/4] Building final pt3player.prg...")
     startup_bytes = open(startup, 'rb').read()
     player_bytes  = open(player,  'rb').read()
 
