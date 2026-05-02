@@ -160,8 +160,8 @@ For per-file attribution and license carve-outs, see
 
 ### Project work
 
-- **Kris** (project owner) — Plus/4 + DigiMuz hardware, test methodology,
-  bit-exact validation strategy, listening tests on YAPE that drove diagnosis
+- **Kris** (project owner) — test methodology, bit-exact validation strategy, 
+  listening tests on YAPE and Plus/4 + DigiMuz hardware, that drove diagnosis
   of the R13 envelope-retrigger and pattern-boundary IRQ-overrun bugs.
 - **Claude Opus 4.7** (Anthropic) — Python reference simulator, CA65 6502
   implementation, py65 test harness — pair-programmed with Kris, invoice
