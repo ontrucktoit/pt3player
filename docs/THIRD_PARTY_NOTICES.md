@@ -2,7 +2,7 @@
 
 This project's PT3 player would not exist without the work of three
 people who built and documented the Vortex Tracker II (VTII) ecosystem
-on ZX Spectrum, MSX, and Windows:
+on ZX Spectrum and Windows:
 
 - **Sergey Bulba** (S.V.Bulba) — author of the VTII Z80 player and the
   Pascal source for the desktop tracker.
@@ -16,13 +16,13 @@ found.
 
 ---
 
-## 1. trfuncs.pas → pt3_simulator.py + pt3_pattern_decoder.py
+## 1. trfuncs.pas → src/player.s
 
 **What we use:** the high-level PT3 pattern decoder and per-tick playback
-state machine. Our Python implementation is a line-by-line port; many
-inline comments in `tools/pt3_python_sim/pt3_simulator.py` and
-`pt3_pattern_decoder.py` cite specific line numbers in `trfuncs.pas`
-for non-obvious behaviors.
+state machine. We developed a Python reference simulator as a line-by-line
+port of `trfuncs.pas` (with inline comments citing specific line numbers
+for non-obvious behaviors), then translated that simulator into 6502
+assembly. The Python simulator is for our internal tests.
 
 **Original source:**
 - Author: Sergey Bulba © 2000–2009
@@ -32,14 +32,12 @@ for non-obvious behaviors.
   https://github.com/z00m128/vortextracker25/blob/main/trfuncs.pas
 - Original distribution: http://bulba.untergrund.net/vortex_e.htm
 
-**Files in this repository derived from `trfuncs.pas`:**
-- `tools/pt3_python_sim/pt3_simulator.py` — playback engine
-- `tools/pt3_python_sim/pt3_pattern_decoder.py` — pattern stream decoder
-
-The C/A65 player (`src/player.s`) inherits this logic transitively
-through the Python port, with attribution in the relevant section
-headers (M5a pattern decoder, M5b multi-channel driver, M6 playback
-engine, `m6_compute_pat_len`).
+**Files in this repository derived (transitively, via the private Python
+port) from `trfuncs.pas`:**
+- `src/player.s` — pattern stream decoder (M5a milestone), multi-channel
+  driver (M5b), playback engine (M6), `m6_compute_pat_len`. The relevant
+  section headers in `player.s` carry inline attribution back to
+  `trfuncs.pas`.
 
 ---
 
@@ -66,8 +64,9 @@ tables for each.
   also widely mirrored, e.g. http://mus.msx.click/index.php?title=PROTRACKER372_PT3PLAY_H)
 
 **Files in this repository derived from NoteTableCreator:**
-- `tools/pt3_python_sim/pt3_tables.py` — function `build_note_table()`
-- `src/player.s` — `player_build_note_table` (M2 milestone)
+- `src/player.s` — `player_build_note_table` (M2 milestone). The 6502
+  port mirrors Roshin's algorithm structure verbatim; the seed table
+  values are unchanged.
 
 ---
 
@@ -85,17 +84,17 @@ with a one-bit version switch.
 - Distribution: see (2) above
 
 **Files in this repository derived from VolTableCreator:**
-- `tools/pt3_python_sim/pt3_tables.py` — function `build_volume_table()`
-- `src/player.s` — `player_build_volume_table` (M3 milestone)
+- `src/player.s` — `player_build_volume_table` (M3 milestone). The 6502
+  port follows Roshin's algorithm with the "new" volume table selected
+  by default (see behavioral note below).
 
 **Important behavioral note:** Bulba's original Z80 player selects the
 "old" table for PT3 < 4 and the "new" table for PT3 ≥ 4. VTII (the
 desktop tracker, `trfuncs.pas`) overrides this and uses the "new" table
 for **all** versions when generating reference PSG output. We follow
 VTII's behavior, not the asm player's, so that we match VTII's PSG
-files bit-for-bit. This decision is documented in
-`tools/pt3_python_sim/pt3_simulator.py` near the `build_volume_table(pt_version=7)`
-call site.
+files bit-for-bit. This decision is implemented in `src/player.s`
+(M3 milestone) and matches `trfuncs.pas` `Calc_Volume(...)` behavior.
 
 ---
 
@@ -108,9 +107,9 @@ maintainers know what to consult.
 ### Vince Weaver's PT3 specification
 
 `README_pt3.txt` — informal English-language specification of the PT3
-file format. We reference it for terminology and offset numbers; we
-diverge from it whenever VTII's actual behavior contradicts the spec
-(see the design notes in `tools/pt3_python_sim/pt3_simulator.py`).
+file format by Vince Weaver. We reference it for terminology and offset
+numbers; we diverge from it whenever VTII's actual behavior contradicts
+the spec. The specific divergences are listed in section 5 below.
 
 ### ZXTune (Vitamin/CAIG)
 
@@ -128,14 +127,94 @@ formats, including PT3.
 ### Vortex Tracker II (the binary application)
 
 The Windows desktop tracker we used to **generate reference PSG dump
-files** for our test corpus. The `.psg` files in
-`tools/pt3_python_sim/test_files/` were produced by VTII's "Save as PSG"
-feature on PT3 modules composed by their respective musicians (each
-file has its composer credited in its filename). VTII the application
-is freely redistributable from its official site
-(http://bulba.untergrund.net/), and the music modules retain their
-composers' rights — they are included here under fair use for testing
-and reference purposes only and are not relicensed by this project.
+files** during development for bit-exact regression testing. PSG files
+were produced by VTII's "Save as PSG" feature on PT3 modules composed
+by their respective musicians; this corpus is **not** redistributed in
+this repository — the music modules retain their composers' rights, and
+users wishing to test the player should bring their own PT3 files
+(see README for suggested sources). VTII the application is freely
+redistributable from its official site (http://bulba.untergrund.net/).
+
+---
+
+## 5. Where we diverge from Vince Weaver's `README_pt3.txt`
+
+Weaver's spec is informative but predates several VTII behaviors that
+modern PT3 files rely on. Where the spec and VTII's actual playback
+disagree, **we follow VTII** (because matching VTII bit-exact is the
+goal). The following list is the complete set of divergences we found
+during M4–M6 development. Future maintainers should treat these as
+documented design choices, not bugs.
+
+### 5.1 Header offsets
+
+The PT3 header layout was reverse-engineered from `trfuncs.pas` and the
+VTII Z80 player's INIT routine. Canonical offsets (verified across the
+19-file private corpus):
+
+| Offset | Field             | Notes                                          |
+|--------|-------------------|------------------------------------------------|
+| `$63`  | tone_table        | 0=ST, 1=ASM-PT2, 2=ASM-PT3, 3=REAL-PT3         |
+| `$64`  | delay (initial)   |                                                |
+| `$65`  | num_positions     | Counts entries; `$FF` byte still follows list  |
+| `$66`  | loop_pos          |                                                |
+| `$67-68` | patterns_ptr    | LE                                             |
+| `$69-6A` | samples_ptr     | LE                                             |
+| `$6B-6C` | ornaments_ptr   | LE                                             |
+| `$6D…` | position list     | each byte = pattern_num × 3, terminated by `$FF` |
+
+### 5.2 Position list is double-encoded
+
+`num_positions` at `$65` gives the count, **and** a `$FF` sentinel byte
+follows the list at offset `$C9 + num_positions`. Weaver's spec mentions
+only one of these; both are present in real files and our M4 parser
+relies on this redundancy.
+
+### 5.3 Envelope period is big-endian
+
+This is the **only** big-endian field in PT3. Everywhere else is
+little-endian. Easy to miss in a port.
+
+### 5.4 `SETENV` opcode shape encoding
+
+Envelope shape = `(opcode_byte & 0x0F) - 1`. Subtracting 1 is required
+and not in the spec.
+
+### 5.5 `PD_ESAM` consumes 3 bytes, not 4
+
+Weaver's spec says 4. Real files use 3. Confirmed against `trfuncs.pas`
+state-machine length tables.
+
+### 5.6 `ORN=0` implies envelope off (sometimes)
+
+If a row sets `ORN=0` and `env_type` was not already set on that channel,
+the envelope is disabled implicitly. Weaver's spec doesn't mention this
+edge case.
+
+### 5.7 T_PACK is written to T1_ in REVERSE order
+
+The track-pack data is written to the active T1_ slot in reverse byte
+order. This is what `trfuncs.pas` does; not in Weaver's spec.
+
+### 5.8 Volume table selection diverges from Bulba's Z80 player
+
+Bulba's original Z80 player (`VTII10 r7`) uses the "old" volume table
+for PT3 < 4 and the "new" table for PT3 ≥ 4. **VTII (the desktop
+tracker) overrides this and uses the "new" table for ALL versions when
+generating reference PSG output.** We follow VTII, not Bulba's asm
+player. This is the single biggest behavioral divergence between our
+player and a strict reading of either the spec or the Z80 player. See
+`docs/THIRD_PARTY_NOTICES.md` section 3 for the full rationale.
+
+### 5.9 R13 (envelope shape register) sentinel handling
+
+PT3 convention: `$FF` in the AY shadow register slot for R13 means
+**skip R13 this frame**. On a real AY chip, **any write to R13
+re-triggers the envelope generator**, restarting it from phase 0.
+Naively writing R13 every frame (as some ports do, including an early
+prototype of this player) causes envelope effects to reset 50× per
+second instead of running their natural course. Our M6 implementation
+correctly skips R13 writes when the shadow value is `$FF`.
 
 ---
 

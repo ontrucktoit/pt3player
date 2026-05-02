@@ -24,8 +24,8 @@ expansion as well as YAPE in both PAL and NTSC modes.
 ## Embedding the player in your own program
 
 The player exposes a 16-entry jump table at `$1100`. For most users, only the
-first three matter (init, load song, tick). The rest are exposed for testing
-and advanced uses.
+first three matter (init, load song, tick). The rest are exposed for advanced
+uses.
 
 | Address | Symbol               | Description                                                            |
 |---------|----------------------|------------------------------------------------------------------------|
@@ -61,7 +61,9 @@ $1001-$10FF   BASIC stub + startup code (host program)
 $1100-$2565   PT3 player library (engine + RODATA, ~5.2 KB)
 $2566-$28D1   Player BSS (allocated at runtime)
 $4000-$7FFF   PT3 song data (default; configurable in pt3player.s)
-$8000-$BFFF   Free RAM (with ROM disabled at startup)
+$8000-$BFFF   Free RAM (BASIC ROM area; standalone player disables ROM
+              via $FF3F to expose this region — library users may keep
+              ROM enabled if they don't need this RAM)
 $FD21-$FD23   DigiMuz AY-3-8910 register interface
 ```
 
@@ -76,14 +78,14 @@ NO-NOTE-NO-LOOP, GLISS-NOTE, NOISE-BASE, and ENGLS.
 
 To test a PT3 file: bundle it with the player using
 `python3 tools/build_play_prg.py your_file.pt3`, which produces a self-contained
-`.prg` runnable on YAPE, VICE, or real Plus/4 hardware (with DigiMuz expansion).
+`.prg` runnable on YAPE or real Plus/4 hardware (with DigiMuz expansion).
 
 ---
 
 ## Building from source
 
 Requirements: [`cc65`](https://cc65.github.io/) toolchain (`ca65` + `ld65`),
-Python 3.10+ (for the regression harness).
+Python 3.10+ (for the build scripts).
 
 ```bash
 # Build standalone pt3player.prg (loads PT3 from disk at runtime)
@@ -119,14 +121,14 @@ prose).
 ## Acknowledgments
 
 This project would not exist without the work of three people who built and
-documented the Vortex Tracker II ecosystem on ZX Spectrum, MSX, and Windows
+documented the Vortex Tracker II ecosystem on ZX Spectrum and Windows
 over the past two decades. Their decision to release source code publicly is
 what made it possible for a Plus/4 player to exist at all.
 
 - **Sergey Bulba** (S.V.Bulba) — author of the VTII Z80 player for ZX
   Spectrum (`VTII10 r7`, ©2004–2007) and the Pascal source for the desktop
-  tracker (`trfuncs.pas`, ©2000–2009). The Pascal source is the executable
-  specification that our Python simulator was line-by-line ported from.
+  tracker (`trfuncs.pas`, ©2000–2009). The Pascal source served as the
+  executable specification we worked against during development.
   The Z80 player is what supplied our note-table and volume-table generators.
   Project page: <http://bulba.untergrund.net/>
 
@@ -142,7 +144,7 @@ what made it possible for a Plus/4 player to exist at all.
 
 The PT3 music format itself was created by Bulba's tracker. This repository
 does not bundle PT3 music files — bring your own. Use any of the many archives
-maintained by the Spectrum/MSX scene (such as <https://vtrd.in> or
+maintained by the ZX Spectrum scene (such as <https://vtrd.in> or
 <https://zxart.ee>) to obtain PT3 files for testing.
 
 For attribution details and license carve-outs covering the ported algorithms,

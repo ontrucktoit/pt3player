@@ -32,3 +32,6 @@ src/m2_test*.cfg
 src/loadaddr.s
 src/testtone.s
 src/testtone.cfg
+
+# Internal dev journal — kept locally, not part of public docs
+docs/SESSION_LOG.md
