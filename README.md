@@ -75,7 +75,7 @@ start:
 
 For a complete reference, see:
 
-- **`src/pt3player.s`** — the standalone player (loads any PT3 from monitor)
+- **`src/pt3player.s`** — the standalone player
 - **`src/play_template.s`** — template that bundles a specific PT3 via `.incbin`
 - **`src/pt3_player.inc`** — full equates list with all jump table entries
 
