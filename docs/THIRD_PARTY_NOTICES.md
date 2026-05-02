@@ -146,29 +146,50 @@ goal). The following list is the complete set of divergences we found
 during M4–M6 development. Future maintainers should treat these as
 documented design choices, not bugs.
 
-### 5.1 Header offsets
+### Glossary — VTII names vs Weaver's spec terminology
 
-The PT3 header layout was reverse-engineered from `trfuncs.pas` and the
-VTII Z80 player's INIT routine. Canonical offsets (verified across the
-19-file private corpus):
+The internal names below come from `trfuncs.pas` (Pascal source of
+Vortex Tracker II). They are the names used in our `src/player.s`
+section headers and in the divergence notes that follow. Readers
+familiar only with Weaver's `README_pt3.txt` may find this mapping
+useful:
 
-| Offset | Field             | Notes                                          |
-|--------|-------------------|------------------------------------------------|
-| `$63`  | tone_table        | 0=ST, 1=ASM-PT2, 2=ASM-PT3, 3=REAL-PT3         |
-| `$64`  | delay (initial)   |                                                |
-| `$65`  | num_positions     | Counts entries; `$FF` byte still follows list  |
-| `$66`  | loop_pos          |                                                |
-| `$67-68` | patterns_ptr    | LE                                             |
-| `$69-6A` | samples_ptr     | LE                                             |
-| `$6B-6C` | ornaments_ptr   | LE                                             |
-| `$6D…` | position list     | each byte = pattern_num × 3, terminated by `$FF` |
+| Our name (VTII) | Weaver's name / not in spec | What it is |
+|-----------------|------------------------------|------------|
+| `PD_ESAM`       | not named in spec; corresponds to pattern stream opcodes `$10-$1F` | "Envelope + SAMple" command — sets envelope shape, optional envelope period (2 bytes), and a sample number to apply. Despite Weaver's spec implying 4-byte length for envelope-bearing variants, real files (and `trfuncs.pas`) use 3 bytes (see 5.5). |
+| `T_PACK`        | not in spec                  | Compact, packed encoding of one channel's track-state data inside a pattern. The pattern-row decoder unpacks `T_PACK` bytes into a `T1_` slot (one per channel) where the per-tick state machine reads them. |
+| `T1_` slot      | not in spec                  | Per-channel scratch area where unpacked `T_PACK` data lives during pattern playback (one slot for each of the three AY channels A/B/C). |
+| `SETENV`        | "envelope shape command" in Weaver's prose | Pattern-stream opcode that selects one of the 8 AY envelope shapes (R13 values 0/1/4/8-15). VTII encodes shape as `(opcode & 0x0F) - 1`; the `-1` is non-obvious (see 5.4). |
+| `ORN`           | "ornament" (same name in spec) | Index into the file's ornament table. `ORN=0` has special meaning (see 5.6). |
+| `tone_table` (`$63`) | "Frequency table" in Weaver | 0=ST, 1=ASM-PT2, 2=ASM-PT3, 3=REAL-PT3. Selects which of the four 96-entry note-frequency tables to use. |
+
+### 5.1 Header offsets — pointer tables
+
+The PT3 header layout in `src/player.s` matches Weaver's spec for
+**fixed offsets and pointer-table starts** (Weaver got these right);
+divergences below concern interpretation, not layout.
+
+For reference, the layout we (and Weaver) use:
+
+| Offset       | Size       | Field                      | Notes                                                             |
+|--------------|-----------:|----------------------------|-------------------------------------------------------------------|
+| `$63`        | 1 byte     | tone_table                 | 0..3 (see Glossary above)                                         |
+| `$64`        | 1 byte     | initial speed/delay        |                                                                   |
+| `$65`        | 1 byte     | max pattern number + 1     | Weaver's "Number of patterns+1"; bounds pattern-id values         |
+| `$66`        | 1 byte     | loop position (LPosPtr)    | Index into position list to loop back to                          |
+| `$67-$68`    | 2 bytes    | PatsPtrs (LE)              | Pointer to patterns table (3 × 16-bit per pattern: ch A/B/C)      |
+| `$69-$A8`    | 64 bytes   | SamPtrs[32] (LE)           | 32 × 16-bit pointers to sample data                               |
+| `$A9-$C8`    | 32 bytes   | OrnPtrs[16] (LE)           | 16 × 16-bit pointers to ornament data                             |
+| `$C9…`       | variable   | position list              | bytes = pattern_id × 3, `$FF`-terminated                          |
 
 ### 5.2 Position list is double-encoded
 
-`num_positions` at `$65` gives the count, **and** a `$FF` sentinel byte
-follows the list at offset `$C9 + num_positions`. Weaver's spec mentions
-only one of these; both are present in real files and our M4 parser
-relies on this redundancy.
+The position list is terminated by `$FF` (Weaver's spec is correct on
+this). However, `trfuncs.pas` and the VTII Z80 player use **two
+independent ways** of finding the end: (a) walk until `$FF`, and (b)
+use the patterns-table pointer at `$67-68` (the position list ends just
+before patterns-table data begins). Real files agree on both; our M4
+parser cross-checks them as a sanity gate.
 
 ### 5.3 Envelope period is big-endian
 
@@ -180,9 +201,17 @@ little-endian. Easy to miss in a port.
 Envelope shape = `(opcode_byte & 0x0F) - 1`. Subtracting 1 is required
 and not in the spec.
 
-### 5.5 `PD_ESAM` consumes 3 bytes, not 4
+### 5.5 `PD_ESAM` opcode consumes 3 bytes, not 4
 
-Weaver's spec says 4. Real files use 3. Confirmed against `trfuncs.pas`
+(See Glossary for what `PD_ESAM` is.) Weaver's spec implies 4 bytes
+for the envelope-bearing variants. Real files use 3:
+
+- Opcode byte (`$11-$1F`)
+- Envelope period high byte
+- Envelope period low byte (note: big-endian — see 5.3)
+
+…with the sample-number byte coming from a separate pattern-stream
+slot, not the `PD_ESAM` payload. Confirmed against `trfuncs.pas`
 state-machine length tables.
 
 ### 5.6 `ORN=0` implies envelope off (sometimes)
@@ -191,10 +220,16 @@ If a row sets `ORN=0` and `env_type` was not already set on that channel,
 the envelope is disabled implicitly. Weaver's spec doesn't mention this
 edge case.
 
-### 5.7 T_PACK is written to T1_ in REVERSE order
+### 5.7 `T_PACK` is unpacked into the `T1_` slot in REVERSE byte order
 
-The track-pack data is written to the active T1_ slot in reverse byte
-order. This is what `trfuncs.pas` does; not in Weaver's spec.
+(See Glossary for what `T_PACK` and `T1_` are.) When the pattern-row
+decoder unpacks a `T_PACK`-encoded channel's track data into the per-
+channel `T1_` scratch slot, the bytes are written **in reverse order**
+(highest target address first, lowest last). This is what `trfuncs.pas`
+does. Weaver's spec does not describe `T_PACK` packing or unpacking at
+all, so there is no "diverge from Weaver" here per se — but readers
+porting from a Weaver-only understanding will not have this detail and
+will get scrambled track data if they don't reverse the unpack.
 
 ### 5.8 Volume table selection diverges from Bulba's Z80 player
 
