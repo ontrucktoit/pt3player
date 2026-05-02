@@ -12,7 +12,7 @@ tables and the full PT3 effect set.
 
 ## Status
 
-✅ **M1–M6 complete and shipping** — full playback engine, bit-exact.
+✅ **Complete and shipping** — full playback engine, bit-exact.
 
 Validated against a 19-file PT3 corpus spanning PT3.5, PT3.7, VTII 1.0, and
 VTII 2.0 — 100% bit-exact AY register match versus Vortex Tracker II reference

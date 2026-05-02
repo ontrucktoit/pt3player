@@ -24,7 +24,7 @@ tools/corpus_test.py
 *.psg
 *.txt
 
-# Milestone test programs from M1/M2 development phase — kept locally only
+# Test programs from early development — kept locally only
 src/m1_test*.s
 src/m1_test*.cfg
 src/m2_test*.s

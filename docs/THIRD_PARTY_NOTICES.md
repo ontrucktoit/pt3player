@@ -34,10 +34,10 @@ assembly. The Python simulator is for our internal tests.
 
 **Files in this repository derived (transitively, via the private Python
 port) from `trfuncs.pas`:**
-- `src/player.s` — pattern stream decoder (M5a milestone), multi-channel
-  driver (M5b), playback engine (M6), `m6_compute_pat_len`. The relevant
-  section headers in `player.s` carry inline attribution back to
-  `trfuncs.pas`.
+- `src/player.s` — pattern stream decoder (`player_decode_row`),
+  multi-channel driver (`player_decode_row_all`), playback engine
+  (`player_tick`), `m6_compute_pat_len`. The relevant section headers
+  in `player.s` carry inline attribution back to `trfuncs.pas`.
 
 ---
 
@@ -64,7 +64,7 @@ tables for each.
   also widely mirrored, e.g. http://mus.msx.click/index.php?title=PROTRACKER372_PT3PLAY_H)
 
 **Files in this repository derived from NoteTableCreator:**
-- `src/player.s` — `player_build_note_table` (M2 milestone). The 6502
+- `src/player.s` — `player_build_note_table`. The 6502
   port mirrors Roshin's algorithm structure verbatim; the seed table
   values are unchanged.
 
@@ -84,7 +84,7 @@ with a one-bit version switch.
 - Distribution: see (2) above
 
 **Files in this repository derived from VolTableCreator:**
-- `src/player.s` — `player_build_volume_table` (M3 milestone). The 6502
+- `src/player.s` — `player_build_volume_table`. The 6502
   port follows Roshin's algorithm with the "new" volume table selected
   by default (see behavioral note below).
 
@@ -94,7 +94,7 @@ Z80 player (`VTII10 r7`) selects the "old" table for PT3 < 4 and the
 overrides this and uses the "new" table for **all** versions when
 generating reference PSG output. We follow VTII's behavior, not the
 Z80 asm player's, so that we match VTII's PSG files bit-for-bit. In
-`src/player.s` (M3 milestone), `player_init_song` calls
+`src/player.s`, `player_init_song` calls
 `player_build_volume_table` with a hard-coded `pt_version=7` regardless
 of the file's actual PT3 version, which lands in the NEW variant branch
 (`pt_version >= 5` → NEW). This matches `trfuncs.pas`'s `Calc_Volume(...)`
@@ -164,7 +164,7 @@ Naively writing R13 every frame (as some ports do, including an early
 prototype of this player) causes envelope effects to reset 50× per
 second instead of running their natural course.
 
-Our M6 implementation correctly skips R13 writes when the shadow value
+Our implementation correctly skips R13 writes when the shadow value
 is `$FF` (`src/player.s` lines ~1913-1964 — comment block titled
 "Writing R13 to AY restarts the envelope generator, even with same
 value").
