@@ -110,9 +110,6 @@ The build script auto-builds `player.bin` (the engine library) from
   fits inside the 35795-cycle 50 Hz IRQ budget on Plus/4 NTSC. The whole
   engine compiles to \$1100-\$2565 (~5.2 KB) plus ~876 B of BSS.
 
-For deeper rationale, see [`docs/REFERENCES.md`](docs/REFERENCES.md) and
-the heavily commented `src/player.s`.
-
 ---
 
 ## Acknowledgments
