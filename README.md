@@ -8,36 +8,6 @@ AY chip matches the VTII reference output, frame-for-frame, on a 19-file
 test corpus including PT3.5/PT3.7/VTII1.0/VTII2.0 files using all four tone
 tables and the full PT3 effect set.
 
-> **Project full name** *(długa chwalebna nazwa projektu)*:
-> `new_reference_player_by_Claude_Opus4.7_who_deserves_a_bottle_of_Georgian_kindzmarauli`
-
----
-
-## Try it now
-
-The fastest way to hear it:
-
-1. Download `pt3player.prg` from the [latest release](https://github.com/ontrucktoit/pt3player/releases).
-2. Load on your Plus/4 (or in [YAPE](http://yape.homeserver.hu/)):
-   ```
-   LOAD"PT3PLAYER",8,1
-   ```
-3. Drop into the machine monitor (`SYS 1024` for TEDMON, or hit the monitor key
-   on real hardware) and load any PT3 file at `$4000`:
-   ```
-   L "TUNE.PT3" 08 4000
-   ```
-4. Jump to the player:
-   ```
-   G 100D
-   ```
-
-The screen blanks (uniform border colour), the Timer 1 IRQ takes over, and
-your tune plays through the DigiMuz audio jack. RESET to stop.
-
-The release zip also includes ready-to-run bundled PRGs (`*_play.prg`) for
-seven test tunes — load and `RUN` directly, no monitor needed.
-
 ---
 
 ## Status
