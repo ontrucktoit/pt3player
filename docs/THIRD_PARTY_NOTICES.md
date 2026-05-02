@@ -116,9 +116,15 @@ file format by Vince "Deater" Weaver, dated 10 September 2019. This
 was our entry point into the format: Deater's writeup is the only
 comprehensive English-language PT3 documentation we know of, and it
 saved us significant time deciphering the Russian-commented Pascal
-source. Section 5 below lists implementation details we found while
-cross-checking against `trfuncs.pas` — these supplement rather than
-contradict the spec.
+source.
+
+The spec covers everything we needed for the player's pattern decoder
+faithfully. One small detail it leaves ambiguous: under opcode `$40-$4f`
+("set ornament") it notes "possibly setting 0 counts as disabling" —
+in practice, `$40` (i.e. `ORN=0`) also implicitly disables the envelope
+when no envelope was set on the current row (`row_env_type` still has
+the sentinel `$FF`). Our implementation reflects this in `src/player.s`
+(lines ~993-1004), matching `trfuncs.pas`.
 
 ### ZXTune (Vitamin/CAIG)
 
@@ -146,54 +152,7 @@ redistributable from its official site (http://bulba.untergrund.net/).
 
 ---
 
-## 5. Notes supplementing Deater's `README_pt3.txt`
-
-Deater's spec is a fine starting point but inevitably doesn't cover
-every detail you need to match VTII's actual playback bit-exact. The
-notes below are details we found by cross-checking with `trfuncs.pas`
-during M4–M6 development. Future maintainers can treat them as
-footnotes to Deater's writeup — places where his spec is correct but
-terse, or where VTII does something the spec doesn't describe.
-
-### Glossary — VTII names vs Deater's spec terminology
-
-The internal names below come from `trfuncs.pas` (Pascal source of
-Vortex Tracker II). They are the names used in our `src/player.s`
-section headers and in the notes that follow. Readers familiar only
-with Deater's `README_pt3.txt` may find this mapping useful:
-
-| Our name (VTII) | Deater's name / not in spec | What it is |
-|-----------------|------------------------------|------------|
-| `PD_ESAM`       | not named in spec; corresponds to pattern stream opcodes `$10-$1F` | "Envelope + SAMple" command — sets envelope shape (`A & $0F`, with `$10` meaning "env off"), an optional 2-byte big-endian envelope period (only for `$11-$1F`), and a sample number. |
-| `SETENV`        | "envelope shape command" in Deater's prose | Pattern-stream opcodes `$B0-$BF`. `$B0` means env off, `$B1` is SKIP, `$B2-$BF` set envelope shape via `(opcode & $0F) - 1` followed by a 2-byte big-endian envelope period. |
-| `ORN`           | "ornament" (same name in spec) | Pattern-stream opcodes `$40-$4F`. `$40` (i.e. `ORN=0`) has special meaning — see 5.3. |
-| `tone_table` (`$63`) | "Frequency table" in Deater | 0=ST, 1=ASM-PT2, 2=ASM-PT3, 3=REAL-PT3. Selects which of the four 96-entry note-frequency tables to use. |
-
-### 5.1 Envelope period is big-endian
-
-This is the **only** big-endian field in PT3. Everywhere else is
-little-endian. Easy to miss in a port. Confirmed in `src/player.s`
-(lines ~954-965 for `PD_ESAM` and ~1042-1063 for `SETENV`): hi byte
-read first, lo byte second.
-
-### 5.2 `SETENV` opcode shape encoding
-
-Envelope shape = `(opcode_byte & $0F) - 1`. The `-1` adjustment is
-required and not in Deater's spec. Confirmed in `src/player.s`
-(lines ~1041-1046).
-
-### 5.3 `ORN=0` (opcode `$40`) implicitly disables envelope
-
-Pattern-stream opcode `$40` (which sets ornament index to 0) has a
-side effect not described in the spec: if `row_env_type` was not yet
-set on the current row (i.e. still has the "no envelope set this row"
-sentinel `$FF`), then `$40` will also set `row_env_type = $0F`
-("envelope explicitly off"). Our implementation does exactly this in
-`src/player.s` (lines ~993-1004).
-
----
-
-## 6. AY chip implementation note — R13 sentinel handling
+## 5. AY chip implementation note — R13 sentinel handling
 
 This is **not** about the PT3 file format or Deater's spec — it's a
 detail of how a PT3 player should drive the AY-3-8910 chip itself.
