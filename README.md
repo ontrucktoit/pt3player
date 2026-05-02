@@ -24,23 +24,7 @@ tables and the full PT3 effect set.
 
 ## Embedding the player in your own program
 
-The library is a single binary (`build/player.bin`, 5.2 KB at `$1100-$2565`)
-plus a header file (`src/pt3_player.inc`). Three public entry points are all
-you need:
 
-```asm
-.include "pt3_player.inc"
-
-start:
-        sei
-        sta     RAM_ENABLE          ; $FF3F: ROM off so PT3 is visible at high RAM
-        jsr     PLAYER_INIT         ; one-time init
-        lda     #>$4000             ; A = hi byte of PT3 base address
-        ldx     #<$4000             ; X = lo byte
-        jsr     PLAYER_INIT_SONG    ; load PT3 file, init song state
-        ; ... install Timer 1 IRQ handler that JSRs PLAYER_TICK each frame ...
-        cli
-        jmp     *                   ; IRQ does the rest
 ```
 
 For a complete reference, see:
