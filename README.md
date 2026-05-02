@@ -1,7 +1,7 @@
 # PT3 Player for Commodore Plus/4 + DigiMuz
 
 A native 6502 assembly (CA65) player for **PT3 (ProTracker 3)** music files,
-targeting the Commodore Plus/4 with a [DigiMuz AY-3-8910 expansion card](https://retrocombs.com/digimuz).
+targeting the Commodore Plus/4 with a [DigiMuz AY-3-8910 expansion card](https://retrocombs.com/digimuz) or [DigiMoooZ](https://plus4world.powweb.com/forum/47657#top).
 
 Bit-exact compatible with **Vortex Tracker II** — every register write to the
 AY chip matches the VTII reference output, frame-for-frame, on a 19-file
