@@ -1967,10 +1967,20 @@ player_tick:
 m6_write_ay_regs:
         ldx     #0
 @loop:
+        cpx     #13                      ; X == 13?  (test BEFORE clobbering N flag)
+        beq     @r13_special
+        ; Normal path (X != 13): always write shadow_ay[X] to AY register X.
         lda     shadow_ay,x
-        cpx     #13
-        bne     @do_write                ; X != 13: always write
-        ; X == 13: skip write if shadow value is sentinel 0xFF (or any 0x80..0xFF)
+        jmp     @do_write
+@r13_special:
+        ; X == 13: skip write if shadow_ay[13] has bit 7 set (sentinel meaning
+        ; "do not write this frame" - see comment block above).
+        ; BUG FIX 2026-05-08: original code did `cpx #13` AFTER `lda shadow_ay,x`,
+        ; which clobbered the N flag from LDA — `bmi` was checking the result of
+        ; the comparison, not the loaded value. R13 was therefore written EVERY
+        ; frame, restarting the envelope generator at 50 Hz.
+        ; Fix: do the X-test before LDA so flags from LDA reach BMI uncorrupted.
+        lda     shadow_ay,x
         bmi     @skip_r13
 @do_write:
         stx     DIGIMUZ_REG_SEL
@@ -2172,13 +2182,12 @@ m6_get_pat_len:
 ;
 ; For each position, divides positions[i] by 3 to get pat_num. If we have not
 ; yet computed that pat_num's length (pat_len_table[pat_num] == 0 acts as
-; the "not yet computed" marker — pre-zeroed by m6_clear_state), calls
-; player_init_pattern + m6_compute_pat_len and stores the result.
+; the "not yet computed" marker), calls player_init_pattern +
+; m6_compute_pat_len and stores the result.
 ;
 ; Marker choice: 0 means "unknown". Real pattern lengths are >= 1 (an empty
 ; pattern has at least one row terminator), so 0 is a safe sentinel and
-; saves us a separate bit-array. m6_clear_state already zeros the BSS
-; region containing pat_len_table at song init.
+; saves us a separate bit-array.
 ;
 ; Caller responsibility:
 ;   - player_init_song calls this AFTER header metadata is loaded and BEFORE
@@ -2188,11 +2197,31 @@ m6_get_pat_len:
 ;     does NOT undo the player_init_pattern stream rewrites between
 ;     iterations of this loop's main pass.
 ;
+; pat_len_table init:
+;   We zero pat_len_table at entry. This is required for correct behaviour
+;   on the SECOND and SUBSEQUENT player_init_song calls within one player
+;   binary load: m6_clear_state clears M6 channel state ($2858..$28C2) but
+;   does NOT include pat_len_table (lives at $2801..$2840 in current build).
+;   Without this loop, the second song's precompute would skip patterns
+;   whose pat_num happened to appear in the previous song — leaving stale
+;   lengths in pat_len_table — causing the player to truncate or extend
+;   patterns mid-row in the new song. (Bug found on real hardware in
+;   pt3jukebox iter 4b real-iron testing: first song plays correctly,
+;   second/third song "reads from middle of pattern, plays a bit, then
+;   does it again". 64 extra cycles per init_song, no IRQ-timing impact.)
+;
 ; Clobbers: A, X, Y, M5_PTR, dec_*, all compat_save_*, pat_len_tmp_pat_num.
 ; -----------------------------------------------------------------------------
 m6_precompute_pat_lens:
-        ; pat_len_table itself is pre-zeroed by m6_clear_state (called
-        ; from player_init_song before us). Use 0 as 'unknown' marker.
+        ; Pre-clear pat_len_table[0..PAT_LEN_TABLE_SIZE-1].
+        ; Zero acts as "not yet computed" sentinel below.
+        ldx     #PAT_LEN_TABLE_SIZE - 1
+        lda     #0
+@clear_table:
+        sta     pat_len_table,x
+        dex
+        bpl     @clear_table
+
         lda     #0
         sta     pat_len_walk_pos
 @pos_loop:
