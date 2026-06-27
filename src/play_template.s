@@ -47,7 +47,7 @@
 ; we need different timer reload values:
 ;   PAL:  886724 / 50 = 17734.48  -> $4546 = 17734  (gives 50.0030 Hz, perfect)
 ;   NTSC: 894886 / 50 = 17897.72  -> $45E9 = 17897  (gives 50.0011 Hz, perfect)
-; The TED bit $FF07 bit 6 reflects PAL (1) or NTSC (0); we read it once at
+; The TED bit $FF07 bit 6 reflects NTSC (1) or PAL (0); we read it once at
 ; startup and pick the right value. Cost: ~12 instructions, one-time.
 ;
 ; IRQ HANDLER
@@ -72,7 +72,7 @@ PT3_BASE         = $4000
 
 ; TED registers
 TED_VIDEO_MODE   = $FF06        ; bit 4 = DEN (Display Enable)
-TED_VIDEO_REG    = $FF07        ; bit 6 = 1 PAL, 0 NTSC
+TED_VIDEO_REG    = $FF07        ; bit 6 = 1 NTSC, 0 PAL
 TED_SOUND_VOL    = $FF11        ; bits 0-3 = volume (0 = mute)
 TIMER1_LO        = $FF00
 TIMER1_HI        = $FF01
@@ -153,17 +153,17 @@ start:
         ; Auto-detect PAL/NTSC and pick the right Timer 1 reload value.
         lda     TED_VIDEO_REG
         and     #%01000000      ; isolate bit 6
-        beq     @is_ntsc        ; bit 6 clear -> NTSC
-@is_pal:
-        lda     #<PAL_TIMER_VAL
-        sta     TIMER1_LO
-        lda     #>PAL_TIMER_VAL
-        sta     TIMER1_HI
-        jmp     @timer_done
+        beq     @is_pal         ; bit 6 clear -> PAL
 @is_ntsc:
         lda     #<NTSC_TIMER_VAL
         sta     TIMER1_LO
         lda     #>NTSC_TIMER_VAL
+        sta     TIMER1_HI
+        jmp     @timer_done
+@is_pal:
+        lda     #<PAL_TIMER_VAL
+        sta     TIMER1_LO
+        lda     #>PAL_TIMER_VAL
         sta     TIMER1_HI
 @timer_done:
 
